@@ -76,11 +76,16 @@ export function createDocumentRouter(documentService: DocumentService): Router {
         msg.includes('Integrity check failed') ||
         msg.includes('File signature') ||
         msg.includes('Document validation failed') ||
+        msg.includes('validation failed') ||
+        msg.includes('Malformed') ||
         msg.includes('Uploaded object not found') ||
         msg.includes('empty (0 bytes)') ||
         msg.includes('expired') ||
         msg.includes('not found') ||
-        msg.includes('exceeds')
+        msg.includes('exceeds') ||
+        msg.includes('mismatch') ||
+        msg.includes('consumed') ||
+        msg.includes('Unsupported')
       ) {
         res.status(400).json({ error: { code: 'BAD_REQUEST', message: msg } });
         return;

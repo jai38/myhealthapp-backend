@@ -8,6 +8,7 @@ import {
   InMemoryDocumentRepository,
   InMemoryExtractionJobRepository,
   InMemoryPrescriptionRepository,
+  InMemoryUploadIntentRepository,
 } from '../src/modules/persistence/repositories.js';
 
 describe('Prescription Extraction Job Lifecycle & Patient Confirmation', () => {
@@ -18,6 +19,7 @@ describe('Prescription Extraction Job Lifecycle & Patient Confirmation', () => {
   let docRepo: InMemoryDocumentRepository;
   let jobRepo: InMemoryExtractionJobRepository;
   let prescriptionRepo: InMemoryPrescriptionRepository;
+  let uploadIntentRepo: InMemoryUploadIntentRepository;
 
   async function createValidPdfBuffer(pageCount = 1): Promise<Buffer> {
     const pdfDoc = await PDFDocument.create();
@@ -57,11 +59,13 @@ describe('Prescription Extraction Job Lifecycle & Patient Confirmation', () => {
   }
 
   beforeEach(() => {
-    storageProvider = new MemoryStorageProvider();
+    uploadIntentRepo = new InMemoryUploadIntentRepository();
+    storageProvider = new MemoryStorageProvider(uploadIntentRepo);
     docRepo = new InMemoryDocumentRepository();
     jobRepo = new InMemoryExtractionJobRepository();
     prescriptionRepo = new InMemoryPrescriptionRepository(jobRepo, docRepo);
   });
+
 
   it('runs the extraction lifecycle: QUEUED -> PROCESSING -> SUCCEEDED', async () => {
     const mockProvider = new MockPrescriptionExtractionProvider({ mode: 'CLEAN' });

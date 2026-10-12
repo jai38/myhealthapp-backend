@@ -130,6 +130,33 @@ export interface ConfirmedPrescriptionResult {
   timelineEvent: TimelineEventRecord;
 }
 
+export interface UploadIntentRecord {
+  id: string;
+  patientProfileId: string;
+  storageKey: string;
+  originalFilename: string;
+  mimeType: string;
+  declaredSizeBytes: number;
+  expiresAt: Date;
+  consumed: boolean;
+  createdAt: Date;
+}
+
+export interface CreateUploadIntentInput {
+  patientProfileId: string;
+  storageKey: string;
+  originalFilename?: string;
+  mimeType: string;
+  declaredSizeBytes: number;
+  expiresAt: Date;
+}
+
+export interface UploadIntentRepository {
+  createIntent(input: CreateUploadIntentInput): Promise<UploadIntentRecord>;
+  getIntent(storageKey: string): Promise<UploadIntentRecord | null>;
+  consumeIntent(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord | null>;
+}
+
 // ==========================================
 // REPOSITORY INTERFACES
 // ==========================================
@@ -168,6 +195,100 @@ export interface PrescriptionRepository {
 // ==========================================
 // PRISMA (POSTGRESQL) REPOSITORY IMPLEMENTATIONS
 // ==========================================
+
+export class PrismaUploadIntentRepository implements UploadIntentRepository {
+  constructor(private readonly prisma: PrismaClient = getPrismaClient()) {}
+
+  async createIntent(input: CreateUploadIntentInput): Promise<UploadIntentRecord> {
+    const record = await this.prisma.uploadIntent.create({
+      data: {
+        id: crypto.randomUUID(),
+        patientProfileId: input.patientProfileId,
+        storageKey: input.storageKey,
+        originalFilename: input.originalFilename || `upload-${input.storageKey.split('/').pop()}`,
+        mimeType: input.mimeType,
+        expectedSizeBytes: input.declaredSizeBytes,
+        expiresAt: input.expiresAt,
+        consumed: false,
+      },
+    });
+
+    return {
+      id: record.id,
+      patientProfileId: record.patientProfileId,
+      storageKey: record.storageKey,
+      originalFilename: record.originalFilename,
+      mimeType: record.mimeType,
+      declaredSizeBytes: record.expectedSizeBytes,
+      expiresAt: record.expiresAt,
+      consumed: record.consumed,
+      createdAt: record.createdAt,
+    };
+  }
+
+  async getIntent(storageKey: string): Promise<UploadIntentRecord | null> {
+    const record = await this.prisma.uploadIntent.findUnique({
+      where: { storageKey },
+    });
+    if (!record) return null;
+    return {
+      id: record.id,
+      patientProfileId: record.patientProfileId,
+      storageKey: record.storageKey,
+      originalFilename: record.originalFilename,
+      mimeType: record.mimeType,
+      declaredSizeBytes: record.expectedSizeBytes,
+      expiresAt: record.expiresAt,
+      consumed: record.consumed,
+      createdAt: record.createdAt,
+    };
+  }
+
+  async consumeIntent(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord | null> {
+    const now = new Date();
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.uploadIntent.findFirst({
+        where: {
+          storageKey,
+          patientProfileId,
+          consumed: false,
+          expiresAt: { gt: now },
+        },
+      });
+
+      if (!existing) {
+        return null;
+      }
+
+      const updateResult = await tx.uploadIntent.updateMany({
+        where: {
+          id: existing.id,
+          consumed: false,
+        },
+        data: {
+          consumed: true,
+        },
+      });
+
+      if (updateResult.count === 0) {
+        return null;
+      }
+
+      return {
+        id: existing.id,
+        patientProfileId: existing.patientProfileId,
+        storageKey: existing.storageKey,
+        originalFilename: existing.originalFilename,
+        mimeType: existing.mimeType,
+        declaredSizeBytes: existing.expectedSizeBytes,
+        expiresAt: existing.expiresAt,
+        consumed: true,
+        createdAt: existing.createdAt,
+      };
+    });
+  }
+}
+
 
 export class PrismaDocumentRepository implements DocumentRepository {
   constructor(private readonly prisma: PrismaClient = getPrismaClient()) {}
@@ -699,8 +820,45 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
 // IN-MEMORY / TEST DOUBLE IMPLEMENTATIONS
 // ==========================================
 
+export class InMemoryUploadIntentRepository implements UploadIntentRepository {
+  private intents = new Map<string, UploadIntentRecord>();
+
+  async createIntent(input: CreateUploadIntentInput): Promise<UploadIntentRecord> {
+    const record: UploadIntentRecord = {
+      id: crypto.randomUUID(),
+      patientProfileId: input.patientProfileId,
+      storageKey: input.storageKey,
+      originalFilename: input.originalFilename || `upload-${input.storageKey.split('/').pop()}`,
+      mimeType: input.mimeType,
+      declaredSizeBytes: input.declaredSizeBytes,
+      expiresAt: input.expiresAt,
+      consumed: false,
+      createdAt: new Date(),
+    };
+    this.intents.set(input.storageKey, record);
+    return { ...record };
+  }
+
+  async getIntent(storageKey: string): Promise<UploadIntentRecord | null> {
+    const record = this.intents.get(storageKey);
+    return record ? { ...record } : null;
+  }
+
+  async consumeIntent(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord | null> {
+    const intent = this.intents.get(storageKey);
+    if (!intent) return null;
+    if (intent.patientProfileId !== patientProfileId) return null;
+    if (intent.consumed) return null;
+    if (new Date() > intent.expiresAt) return null;
+
+    intent.consumed = true;
+    return { ...intent };
+  }
+}
+
 export class InMemoryDocumentRepository implements DocumentRepository {
   private store: Map<string, DocumentRecord> = new Map();
+
 
   async create(data: Omit<DocumentRecord, 'id' | 'uploadedAt' | 'updatedAt'> & { id?: string }): Promise<DocumentRecord> {
     const id = data.id || crypto.randomUUID();

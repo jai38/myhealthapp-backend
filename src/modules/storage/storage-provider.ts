@@ -12,6 +12,10 @@ import {
   DocumentValidationResult,
   MAX_FILE_SIZE_BYTES,
 } from './file-parser-validator.js';
+import {
+  UploadIntentRepository,
+  InMemoryUploadIntentRepository,
+} from '../persistence/repositories.js';
 
 export interface StorageObjectMetadata {
   storageKey: string;
@@ -35,14 +39,6 @@ export interface UploadIntentResponse {
   storageKey: string;
   uploadSignedUrl: string;
   expiresInSeconds: number;
-}
-
-export interface PendingIntentRecord {
-  patientProfileId: string;
-  filename: string;
-  mimeType: string;
-  fileSizeBytes: number;
-  expiresAt: number;
 }
 
 export interface StorageProvider {
@@ -90,25 +86,47 @@ export function validateStorageKey(storageKey: string, expectedPatientProfileId:
 }
 
 /**
+ * Reads an object stream safely with a strict byte limit.
+ * Prevents memory exhaustion attacks from unbounded objects.
+ */
+async function readStreamBounded(stream: any, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of stream) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buf.length;
+    if (totalBytes > maxBytes) {
+      throw new Error(`Object stream exceeded maximum size of ${maxBytes} bytes`);
+    }
+    chunks.push(buf);
+  }
+
+  return Buffer.concat(chunks, totalBytes);
+}
+
+/**
  * Production S3 / MinIO Storage Provider.
  * Connects to S3-compatible private object storage using AWS SDK v3.
- * Generates genuine presigned PUT & GET URLs, retrieves uploaded objects server-side,
- * and performs cryptographic integrity and deep parser verification.
+ * Uses durable PostgreSQL repository for upload intents.
+ * Enforces declared file sizes, bounded streaming, cryptographic integrity, and deep parser verification.
  */
 export class S3StorageProvider implements StorageProvider {
   readonly providerType = 's3';
   private s3Client: S3Client;
   private bucket: string;
-  private pendingIntents: Map<string, PendingIntentRecord> = new Map();
 
-  constructor(options?: {
-    endpoint?: string;
-    region?: string;
-    bucket?: string;
-    accessKeyId?: string;
-    secretAccessKey?: string;
-    useSsl?: boolean;
-  }) {
+  constructor(
+    private readonly uploadIntentRepo: UploadIntentRepository,
+    options?: {
+      endpoint?: string;
+      region?: string;
+      bucket?: string;
+      accessKeyId?: string;
+      secretAccessKey?: string;
+      useSsl?: boolean;
+    }
+  ) {
     const endpoint = options?.endpoint || process.env.STORAGE_ENDPOINT || 'http://localhost:9000';
     const region = options?.region || process.env.STORAGE_REGION || 'us-east-1';
     this.bucket = options?.bucket || process.env.STORAGE_BUCKET || 'myhealthapp-documents';
@@ -142,19 +160,23 @@ export class S3StorageProvider implements StorageProvider {
     const randomUuid = crypto.randomUUID();
     const storageKey = `documents/${request.patientProfileId}/${randomUuid}`;
     const expiresInSeconds = 900; // 15 minutes TTL
+    const expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
 
-    this.pendingIntents.set(storageKey, {
+    // Persist intent in durable repository
+    await this.uploadIntentRepo.createIntent({
       patientProfileId: request.patientProfileId,
-      filename: request.filename,
+      storageKey,
+      originalFilename: request.filename,
       mimeType: request.mimeType,
-      fileSizeBytes: request.fileSizeBytes,
-      expiresAt: Date.now() + expiresInSeconds * 1000,
+      declaredSizeBytes: request.fileSizeBytes,
+      expiresAt,
     });
 
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: storageKey,
       ContentType: request.mimeType,
+      ContentLength: request.fileSizeBytes,
     });
 
     const uploadSignedUrl = await getSignedUrl(this.s3Client, command, {
@@ -176,52 +198,76 @@ export class S3StorageProvider implements StorageProvider {
   ): Promise<StorageObjectMetadata> {
     validateStorageKey(storageKey, patientProfileId);
 
-    const intent = this.pendingIntents.get(storageKey);
+    // Atomically consume intent
+    const intent = await this.uploadIntentRepo.consumeIntent(storageKey, patientProfileId);
     if (!intent) {
-      throw new Error('Upload intent expired or not found. Please initialize a new upload.');
+      const existing = await this.uploadIntentRepo.getIntent(storageKey);
+      if (!existing) {
+        throw new Error('Upload intent expired or not found. Please initialize a new upload.');
+      }
+      if (existing.patientProfileId !== patientProfileId) {
+        throw new Error('Forbidden: Upload intent does not belong to the authenticated patient');
+      }
+      if (existing.consumed) {
+        throw new Error('Upload intent has already been consumed. Duplicate confirmation rejected.');
+      }
+      if (new Date() > existing.expiresAt) {
+        throw new Error('Upload ticket has expired (exceeded 15-minute window)');
+      }
+      throw new Error('Upload intent is invalid or could not be consumed');
     }
 
     if (claimedMimeType && claimedMimeType !== intent.mimeType) {
       throw new Error(`Claimed MIME type ${claimedMimeType} does not match intent MIME type ${intent.mimeType}`);
     }
 
-    if (Date.now() > intent.expiresAt) {
-      this.pendingIntents.delete(storageKey);
-      throw new Error('Upload ticket has expired (exceeded 15-minute window)');
-    }
-
-    // 1. Retrieve actual stored object from S3/MinIO
-    let fileBuffer: Buffer;
+    // 1. Inspect stored object via HeadObject before downloading bytes
+    let headResponse;
     try {
-      fileBuffer = await this.getObjectBuffer(storageKey, patientProfileId);
+      const headCommand = new HeadObjectCommand({
+        Bucket: this.bucket,
+        Key: storageKey,
+      });
+      headResponse = await this.s3Client.send(headCommand);
     } catch {
       throw new Error('Uploaded object not found in private storage. Client must upload bytes before confirming.');
     }
 
-    if (!fileBuffer || fileBuffer.length === 0) {
+    const actualSizeBytes = headResponse.ContentLength;
+    if (actualSizeBytes == null || actualSizeBytes === 0) {
       throw new Error('Uploaded object is empty (0 bytes). Upload must fail closed.');
     }
 
-    if (fileBuffer.length > MAX_FILE_SIZE_BYTES) {
-      throw new Error(`File size ${fileBuffer.length} bytes exceeds 15MB limit`);
+    if (actualSizeBytes > MAX_FILE_SIZE_BYTES) {
+      throw new Error(`File size ${actualSizeBytes} bytes exceeds 15MB limit`);
     }
 
-    // 2. Perform deep parser-based validation (PDF structure, encryption, image dimensions)
+    // Compare actual stored object size with declared size in intent
+    if (intent.declaredSizeBytes !== actualSizeBytes) {
+      throw new Error(
+        `File size mismatch: Declared size ${intent.declaredSizeBytes} bytes does not match actual stored object size ${actualSizeBytes} bytes.`
+      );
+    }
+
+    // 2. Stream object safely with bounded byte limit
+    const fileBuffer = await this.getObjectBuffer(storageKey, patientProfileId);
+
+    // 3. Perform deep parser-based validation (PDF structure, encryption, image dimensions)
     const validation = await validateDocumentContent(fileBuffer, intent.mimeType);
     if (!validation.isValid) {
       throw new Error(`Document validation failed: ${validation.error}`);
     }
 
-    // 3. Server-side SHA-256 calculation
+    // 4. Server-side SHA-256 calculation
     const serverChecksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
     if (expectedChecksum && expectedChecksum.toLowerCase() !== serverChecksum.toLowerCase()) {
       throw new Error('Integrity check failed: Client checksum does not match server-calculated SHA-256');
     }
 
-    const metadata: StorageObjectMetadata = {
+    return {
       storageKey,
-      originalFilename: intent.filename,
+      originalFilename: intent.originalFilename || `prescription-${storageKey.split('/').pop()}`,
       mimeType: intent.mimeType,
       fileSizeBytes: fileBuffer.length,
       sha256Checksum: serverChecksum,
@@ -229,11 +275,6 @@ export class S3StorageProvider implements StorageProvider {
       uploadedAt: new Date(),
       validationDetails: validation,
     };
-
-    // Clean up consumed intent
-    this.pendingIntents.delete(storageKey);
-
-    return metadata;
   }
 
   async getDownloadSignedUrl(storageKey: string, patientProfileId: string): Promise<string> {
@@ -261,9 +302,7 @@ export class S3StorageProvider implements StorageProvider {
         throw new Error('Document not found in storage');
       }
 
-      // Convert readable stream to Buffer
-      const byteArray = await response.Body.transformToByteArray();
-      return Buffer.from(byteArray);
+      return await readStreamBounded(response.Body, MAX_FILE_SIZE_BYTES);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '';
       if (msg.includes('NoSuchKey') || msg.includes('NotFound') || msg.includes('404')) {
@@ -304,12 +343,16 @@ export class S3StorageProvider implements StorageProvider {
 /**
  * Memory Storage Provider Test Double.
  * Retained STRICTLY as an explicitly injected test double for isolated unit testing.
+ * Uses UploadIntentRepository to mirror durable lifecycle and mutual exclusion.
  * Fails closed if an object was not uploaded or staged before finalization.
  */
 export class MemoryStorageProvider implements StorageProvider {
   readonly providerType = 'memory';
   private objects: Map<string, { buffer: Buffer; metadata: StorageObjectMetadata }> = new Map();
-  private pendingIntents: Map<string, PendingIntentRecord> = new Map();
+
+  constructor(
+    private readonly uploadIntentRepo: UploadIntentRepository = new InMemoryUploadIntentRepository()
+  ) {}
 
   async createUploadIntent(request: UploadIntentRequest): Promise<UploadIntentResponse> {
     if (!ALLOWED_MIME_TYPES.has(request.mimeType)) {
@@ -327,13 +370,15 @@ export class MemoryStorageProvider implements StorageProvider {
     const randomUuid = crypto.randomUUID();
     const storageKey = `documents/${request.patientProfileId}/${randomUuid}`;
     const expiresInSeconds = 900; // 15 minutes TTL
+    const expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
 
-    this.pendingIntents.set(storageKey, {
+    await this.uploadIntentRepo.createIntent({
       patientProfileId: request.patientProfileId,
-      filename: request.filename,
+      storageKey,
+      originalFilename: request.filename,
       mimeType: request.mimeType,
-      fileSizeBytes: request.fileSizeBytes,
-      expiresAt: Date.now() + expiresInSeconds * 1000,
+      declaredSizeBytes: request.fileSizeBytes,
+      expiresAt,
     });
 
     return {
@@ -347,12 +392,12 @@ export class MemoryStorageProvider implements StorageProvider {
    * Helper for tests to simulate a client PUT directly to the private bucket
    */
   async putObjectDirect(storageKey: string, buffer: Buffer): Promise<void> {
-    const intent = this.pendingIntents.get(storageKey);
+    const intent = await this.uploadIntentRepo.getIntent(storageKey);
     const patientProfileId = intent ? intent.patientProfileId : storageKey.split('/')[1] || '';
 
     const metadata: StorageObjectMetadata = {
       storageKey,
-      originalFilename: intent?.filename || 'test-file',
+      originalFilename: intent?.originalFilename || 'test-file',
       mimeType: intent?.mimeType || 'application/pdf',
       fileSizeBytes: buffer.length,
       sha256Checksum: crypto.createHash('sha256').update(buffer).digest('hex'),
@@ -371,29 +416,43 @@ export class MemoryStorageProvider implements StorageProvider {
   ): Promise<StorageObjectMetadata> {
     validateStorageKey(storageKey, patientProfileId);
 
-    const intent = this.pendingIntents.get(storageKey);
+    const intent = await this.uploadIntentRepo.consumeIntent(storageKey, patientProfileId);
     if (!intent) {
-      throw new Error('Upload intent expired or not found. Please initialize a new upload.');
+      const existing = await this.uploadIntentRepo.getIntent(storageKey);
+      if (!existing) {
+        throw new Error('Upload intent expired or not found. Please initialize a new upload.');
+      }
+      if (existing.patientProfileId !== patientProfileId) {
+        throw new Error('Forbidden: Upload intent does not belong to the authenticated patient');
+      }
+      if (existing.consumed) {
+        throw new Error('Upload intent has already been consumed. Duplicate confirmation rejected.');
+      }
+      if (new Date() > existing.expiresAt) {
+        throw new Error('Upload ticket has expired (exceeded 15-minute window)');
+      }
+      throw new Error('Upload intent is invalid or could not be consumed');
     }
 
     if (claimedMimeType && claimedMimeType !== intent.mimeType) {
       throw new Error(`Claimed MIME type ${claimedMimeType} does not match intent MIME type ${intent.mimeType}`);
     }
 
-    if (Date.now() > intent.expiresAt) {
-      this.pendingIntents.delete(storageKey);
-      throw new Error('Upload ticket has expired (exceeded 15-minute window)');
-    }
-
     const stored = this.objects.get(storageKey);
     if (!stored || !stored.buffer || stored.buffer.length === 0) {
-      // Must fail closed! No fabricated fallback!
       throw new Error('Uploaded object not found in private storage. Client must upload bytes before confirming.');
     }
 
     const fileBuffer = stored.buffer;
     if (fileBuffer.length > MAX_FILE_SIZE_BYTES) {
       throw new Error('File exceeds maximum allowable size of 15MB');
+    }
+
+    // Compare actual stored object size with declared size in intent
+    if (intent.declaredSizeBytes !== fileBuffer.length) {
+      throw new Error(
+        `File size mismatch: Declared size ${intent.declaredSizeBytes} bytes does not match actual stored object size ${fileBuffer.length} bytes.`
+      );
     }
 
     // Parser-based validation
@@ -411,7 +470,7 @@ export class MemoryStorageProvider implements StorageProvider {
 
     const metadata: StorageObjectMetadata = {
       storageKey,
-      originalFilename: intent.filename,
+      originalFilename: intent.originalFilename || `prescription-${storageKey.split('/').pop()}`,
       mimeType: intent.mimeType,
       fileSizeBytes: fileBuffer.length,
       sha256Checksum: serverChecksum,
@@ -421,8 +480,6 @@ export class MemoryStorageProvider implements StorageProvider {
     };
 
     this.objects.set(storageKey, { buffer: fileBuffer, metadata });
-    this.pendingIntents.delete(storageKey);
-
     return metadata;
   }
 
@@ -460,3 +517,4 @@ export class MemoryStorageProvider implements StorageProvider {
     this.objects.delete(storageKey);
   }
 }
+

@@ -20,12 +20,15 @@ import {
   DocumentRepository,
   ExtractionJobRepository,
   PrescriptionRepository,
+  UploadIntentRepository,
   PrismaDocumentRepository,
   PrismaExtractionJobRepository,
   PrismaPrescriptionRepository,
+  PrismaUploadIntentRepository,
   InMemoryDocumentRepository,
   InMemoryExtractionJobRepository,
   InMemoryPrescriptionRepository,
+  InMemoryUploadIntentRepository,
 } from './modules/persistence/repositories.js';
 import { createDocumentRouter } from './modules/documents/routes.js';
 import { createPrescriptionRouter } from './modules/prescriptions/routes.js';
@@ -39,6 +42,7 @@ export interface AppOptions {
   docRepo?: DocumentRepository;
   jobRepo?: ExtractionJobRepository;
   prescriptionRepo?: PrescriptionRepository;
+  uploadIntentRepo?: UploadIntentRepository;
 }
 
 export const createApp = (options?: AppOptions): Express => {
@@ -116,13 +120,22 @@ export const createApp = (options?: AppOptions): Express => {
       ? new InMemoryPrescriptionRepository(jobRepo, docRepo)
       : new PrismaPrescriptionRepository());
 
+  const uploadIntentRepo =
+    options?.uploadIntentRepo ??
+    (useInMemoryDb
+      ? new InMemoryUploadIntentRepository()
+      : new PrismaUploadIntentRepository());
+
   // Storage initialization: S3StorageProvider by default; MemoryStorageProvider only when explicitly configured
   const useMemoryStorage =
     options?.storageProvider ||
     (process.env.STORAGE_PROVIDER === 'memory' || (process.env.NODE_ENV === 'test' && !process.env.TEST_USE_MINIO));
   const storageProvider =
     options?.storageProvider ??
-    (useMemoryStorage ? new MemoryStorageProvider() : new S3StorageProvider());
+    (useMemoryStorage
+      ? new MemoryStorageProvider(uploadIntentRepo)
+      : new S3StorageProvider(uploadIntentRepo));
+
 
   const extractionProvider =
     options?.extractionProvider ?? new MockPrescriptionExtractionProvider();

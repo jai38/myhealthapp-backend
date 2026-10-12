@@ -4,11 +4,16 @@ import crypto from 'crypto';
 import { PDFDocument } from 'pdf-lib';
 import { createApp } from '../src/app.js';
 import { MemoryStorageProvider } from '../src/modules/storage/storage-provider.js';
-import { InMemoryDocumentRepository } from '../src/modules/persistence/repositories.js';
+import {
+  InMemoryDocumentRepository,
+  InMemoryUploadIntentRepository,
+} from '../src/modules/persistence/repositories.js';
+import { validateProductionConfig } from '../src/config/env.js';
 
 describe('Storage, Document Upload Security & Integrity', () => {
   let storageProvider: MemoryStorageProvider;
   let docRepo: InMemoryDocumentRepository;
+  let uploadIntentRepo: InMemoryUploadIntentRepository;
   let app: any;
 
   const userAToken = 'Bearer mock-access-jwt-userA'; // patientProfileId: pat_userA
@@ -26,10 +31,12 @@ describe('Storage, Document Upload Security & Integrity', () => {
   }
 
   beforeEach(() => {
-    storageProvider = new MemoryStorageProvider();
+    uploadIntentRepo = new InMemoryUploadIntentRepository();
+    storageProvider = new MemoryStorageProvider(uploadIntentRepo);
     docRepo = new InMemoryDocumentRepository();
-    app = createApp({ storageProvider, docRepo });
+    app = createApp({ storageProvider, docRepo, uploadIntentRepo });
   });
+
 
   it('generates a short-lived upload intent with opaque tenant-isolated storageKey and 15-min TTL', async () => {
     const res = await request(app)
@@ -213,18 +220,19 @@ describe('Storage, Document Upload Security & Integrity', () => {
   });
 
   it('rejects fake PDF headers (magic bytes %PDF followed by corrupted payload) via parser validation', async () => {
+    // Buffer has magic bytes %PDF but contains invalid garbage data
+    const corruptBuffer = Buffer.from('%PDF-1.4 completely invalid non-pdf binary content garbage header', 'utf-8');
+
     const intentRes = await request(app)
       .post('/api/v1/documents/upload-intent')
       .set('Authorization', userAToken)
       .send({
         filename: 'fake_header.pdf',
         mimeType: 'application/pdf',
-        fileSizeBytes: 60,
+        fileSizeBytes: corruptBuffer.length,
       });
     const storageKey = intentRes.body.data.storageKey;
 
-    // Buffer has magic bytes %PDF but contains invalid garbage data
-    const corruptBuffer = Buffer.from('%PDF-1.4 completely invalid non-pdf binary content garbage header', 'utf-8');
     await storageProvider.putObjectDirect(storageKey, corruptBuffer);
 
     const confirmRes = await request(app)
@@ -267,18 +275,19 @@ describe('Storage, Document Upload Security & Integrity', () => {
   });
 
   it('rejects corrupt image data with fake magic bytes', async () => {
+    // PNG magic bytes 89 50 4E 47 followed by random noise
+    const corruptPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+
     const intentRes = await request(app)
       .post('/api/v1/documents/upload-intent')
       .set('Authorization', userAToken)
       .send({
         filename: 'fake_png.png',
         mimeType: 'image/png',
-        fileSizeBytes: 30,
+        fileSizeBytes: corruptPng.length,
       });
     const storageKey = intentRes.body.data.storageKey;
 
-    // PNG magic bytes 89 50 4E 47 followed by random noise
-    const corruptPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
     await storageProvider.putObjectDirect(storageKey, corruptPng);
 
     const confirmRes = await request(app)
@@ -330,4 +339,179 @@ describe('Storage, Document Upload Security & Integrity', () => {
       .set('Authorization', userBToken);
     expect(attackerRes.status).toBe(404);
   });
+
+  it('rejects confirmation when actual stored file size mismatches declared intent size', async () => {
+    const validPdf = await createValidPdfBuffer(1);
+    const declaredSize = validPdf.length + 500; // Declared larger than actual
+
+    const intentRes = await request(app)
+      .post('/api/v1/documents/upload-intent')
+      .set('Authorization', userAToken)
+      .send({
+        filename: 'mismatched_size.pdf',
+        mimeType: 'application/pdf',
+        fileSizeBytes: declaredSize,
+      });
+    const storageKey = intentRes.body.data.storageKey;
+
+    // Client uploads validPdf which is actual size, but intent declared declaredSize
+    await storageProvider.putObjectDirect(storageKey, validPdf);
+
+    const confirmRes = await request(app)
+      .post('/api/v1/documents/confirm-upload')
+      .set('Authorization', userAToken)
+      .send({
+        storageKey,
+        mimeType: 'application/pdf',
+      });
+
+    expect(confirmRes.status).toBe(400);
+    expect(confirmRes.body.error.message).toContain('File size mismatch: Declared size');
+  });
+
+  it('rejects confirmation of expired upload intent', async () => {
+    const validPdf = await createValidPdfBuffer(1);
+
+    // Create an intent with an expired date directly in the repository
+    const expiredKey = 'documents/pat_userA/00000000-0000-0000-0000-000000000001';
+    await uploadIntentRepo.createIntent({
+      patientProfileId: 'pat_userA',
+      storageKey: expiredKey,
+      mimeType: 'application/pdf',
+      declaredSizeBytes: validPdf.length,
+      expiresAt: new Date(Date.now() - 10000), // Expired 10s ago
+    });
+
+    await storageProvider.putObjectDirect(expiredKey, validPdf);
+
+    const confirmRes = await request(app)
+      .post('/api/v1/documents/confirm-upload')
+      .set('Authorization', userAToken)
+      .send({
+        storageKey: expiredKey,
+        mimeType: 'application/pdf',
+      });
+
+    expect(confirmRes.status).toBe(400);
+    expect(confirmRes.body.error.message).toContain('expired');
+  });
+
+  it('prevents duplicate confirmation of the same upload intent (mutual exclusion)', async () => {
+    const validPdf = await createValidPdfBuffer(1);
+
+    const intentRes = await request(app)
+      .post('/api/v1/documents/upload-intent')
+      .set('Authorization', userAToken)
+      .send({
+        filename: 'double_confirm.pdf',
+        mimeType: 'application/pdf',
+        fileSizeBytes: validPdf.length,
+      });
+    const storageKey = intentRes.body.data.storageKey;
+
+    await storageProvider.putObjectDirect(storageKey, validPdf);
+
+    // First confirmation -> 201 Created
+    const firstRes = await request(app)
+      .post('/api/v1/documents/confirm-upload')
+      .set('Authorization', userAToken)
+      .send({
+        storageKey,
+        mimeType: 'application/pdf',
+      });
+    expect(firstRes.status).toBe(201);
+
+    // Second confirmation on same storage key -> 400 Bad Request
+    const secondRes = await request(app)
+      .post('/api/v1/documents/confirm-upload')
+      .set('Authorization', userAToken)
+      .send({
+        storageKey,
+        mimeType: 'application/pdf',
+      });
+    expect(secondRes.status).toBe(400);
+    expect(secondRes.body.error.message).toContain('already been consumed');
+  });
+
+  it('ensures upload intent survives service reinitialization (simulating backend restart)', async () => {
+    const validPdf = await createValidPdfBuffer(1);
+
+    // 1. Create upload intent on initial app instance
+    const intentRes = await request(app)
+      .post('/api/v1/documents/upload-intent')
+      .set('Authorization', userAToken)
+      .send({
+        filename: 'restart_test.pdf',
+        mimeType: 'application/pdf',
+        fileSizeBytes: validPdf.length,
+      });
+    const storageKey = intentRes.body.data.storageKey;
+
+    await storageProvider.putObjectDirect(storageKey, validPdf);
+
+    // 2. Reinitialize app with fresh services sharing the same uploadIntentRepo and docRepo
+    const reinitializedApp = createApp({
+      storageProvider,
+      docRepo,
+      uploadIntentRepo,
+    });
+
+    // 3. Confirm upload on the restarted app instance
+    const confirmRes = await request(reinitializedApp)
+      .post('/api/v1/documents/confirm-upload')
+      .set('Authorization', userAToken)
+      .send({
+        storageKey,
+        mimeType: 'application/pdf',
+      });
+
+    expect(confirmRes.status).toBe(201);
+    expect(confirmRes.body.data).toHaveProperty('id');
+    expect(confirmRes.body.data.patientProfileId).toBe('pat_userA');
+  });
+
+  it('refuses production startup when mock auth or insecure defaults are configured (fail-closed)', () => {
+    // 1. Refuse mock auth in production
+    expect(() => {
+      validateProductionConfig({
+        PORT: 4000,
+        NODE_ENV: 'production',
+        API_PREFIX: '/api/v1',
+        DATABASE_URL: 'postgresql://produser:securepassword@prod-db.internal:5432/myhealthapp_prod',
+        AUTH_PROVIDER: 'mock',
+        JWT_SECRET: 'a-very-long-production-jwt-secret-with-plenty-of-entropy-32chars',
+        JWT_EXPIRES_IN: '15m',
+        CLIENT_URL: 'https://myhealthapp.com',
+      } as any);
+    }).toThrow(/AUTH_PROVIDER cannot be set to "mock" in production/);
+
+    // 2. Refuse dev-insecure JWT secrets
+    expect(() => {
+      validateProductionConfig({
+        PORT: 4000,
+        NODE_ENV: 'production',
+        API_PREFIX: '/api/v1',
+        DATABASE_URL: 'postgresql://produser:securepassword@prod-db.internal:5432/myhealthapp_prod',
+        AUTH_PROVIDER: 'supabase',
+        JWT_SECRET: 'dev-insecure-jwt-secret-replace-in-production-min-32-chars-long',
+        JWT_EXPIRES_IN: '15m',
+        CLIENT_URL: 'https://myhealthapp.com',
+      } as any);
+    }).toThrow(/JWT_SECRET must be at least 32 characters/);
+
+    // 3. Refuse development-only database credentials
+    expect(() => {
+      validateProductionConfig({
+        PORT: 4000,
+        NODE_ENV: 'production',
+        API_PREFIX: '/api/v1',
+        DATABASE_URL: 'postgresql://healthuser:healthpassword@localhost:5432/myhealthapp_dev?schema=public',
+        AUTH_PROVIDER: 'supabase',
+        JWT_SECRET: 'a-very-long-production-jwt-secret-with-plenty-of-entropy-32chars',
+        JWT_EXPIRES_IN: '15m',
+        CLIENT_URL: 'https://myhealthapp.com',
+      } as any);
+    }).toThrow(/DATABASE_URL cannot use default development credentials/);
+  });
 });
+

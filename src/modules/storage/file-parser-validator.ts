@@ -42,10 +42,11 @@ export function validateFileMagicBytes(buffer: Buffer, mimeType: string): boolea
  * Validates actual document structure beyond superficial magic byte headers.
  * Detects corrupt files, disguised extensions, encrypted PDFs, page-count overflows, and excessive image dimensions.
  */
-export async function validateDocumentContent(
+async function runDocumentValidationInternal(
   buffer: Buffer,
   claimedMimeType: string
 ): Promise<DocumentValidationResult> {
+
   const fileSizeBytes = buffer.length;
 
   if (fileSizeBytes === 0) {
@@ -213,3 +214,38 @@ export async function validateDocumentContent(
     error: `Unsupported MIME type: ${claimedMimeType}`,
   };
 }
+
+/**
+ * Validates document content with resource limits and an execution timeout to prevent parser hangs.
+ */
+export async function validateDocumentContent(
+  buffer: Buffer,
+  claimedMimeType: string,
+  timeoutMs = 5000
+): Promise<DocumentValidationResult> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<DocumentValidationResult>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Document parser timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([
+      runDocumentValidationInternal(buffer, claimedMimeType),
+      timeoutPromise,
+    ]);
+    if (timer) clearTimeout(timer);
+    return result;
+  } catch (err: unknown) {
+    if (timer) clearTimeout(timer);
+    const msg = err instanceof Error ? err.message : 'Parser validation failure';
+    return {
+      isValid: false,
+      mimeType: claimedMimeType,
+      fileSizeBytes: buffer.length,
+      error: msg,
+    };
+  }
+}
+
