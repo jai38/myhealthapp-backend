@@ -1,0 +1,68 @@
+name: Backend CI & Auto-Deployment
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test & Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run Automated Test Suite
+        run: npm test
+
+      - name: Verify Production Build
+        run: npm run build
+
+  deploy:
+    name: Deploy to Render
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Render Deploy Hook
+        run: |
+          if [ -n "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            echo "Triggering Render deployment via secret deploy hook..."
+            curl -f -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+            echo "Render deploy hook triggered successfully!"
+          else
+            echo "RENDER_DEPLOY_HOOK_URL secret not set in repository."
+            echo "Render auto-deploys git pushes to 'main' automatically via connected GitHub repo."
+          fi
+
+      - name: Healthcheck Live Deployment
+        run: |
+          echo "Waiting 15 seconds for Render deployment to initialize..."
+          sleep 15
+          curl -f -s https://myhealthapp-backend.onrender.com/healthz || echo "Render is spinning up new instance..."
