@@ -1,0 +1,88 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum AuthProvider {
+  EMAIL
+  GOOGLE
+  APPLE
+}
+
+enum ProcessingStatus {
+  UPLOADED
+  EXTRACTING
+  READY_FOR_REVIEW
+  CONFIRMED
+  FAILED
+}
+
+enum ReviewStatus {
+  DRAFT
+  CONFIRMED
+  DISCARDED
+}
+
+enum RecurrenceType {
+  DAILY
+  MULTIPLE_DAILY
+  SPECIFIC_WEEKDAYS
+  EVERY_N_DAYS
+}
+
+enum DoseStatus {
+  PENDING
+  TAKEN
+  SKIPPED
+  SNOOZED
+  MISSED
+}
+
+model User {
+  id            String        @id @default(uuid()) @db.Uuid
+  email         String        @unique
+  passwordHash  String?       @map("password_hash")
+  authProvider  AuthProvider  @default(EMAIL) @map("auth_provider")
+  isVerified    Boolean       @default(false) @map("is_verified")
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
+
+  patientProfile PatientProfile?
+
+  @@map("users")
+}
+
+model PatientProfile {
+  id                     String    @id @default(uuid()) @db.Uuid
+  userId                 String    @unique @map("user_id") @db.Uuid
+  fullName               String    @map("full_name")
+  dateOfBirth            DateTime? @map("date_of_birth") @db.Date
+  gender                 String?
+  bloodGroup             String?   @map("blood_group")
+  isPrimaryAccountHolder Boolean   @default(true) @map("is_primary_account_holder")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userPreferences UserPreferences?
+
+  @@map("patient_profiles")
+}
+
+model UserPreferences {
+  id                    String   @id @default(uuid()) @db.Uuid
+  patientProfileId      String   @unique @map("patient_profile_id") @db.Uuid
+  preferredTimezone     String   @default("Asia/Kolkata") @map("preferred_timezone")
+  notificationsEnabled  Boolean  @default(true) @map("notifications_enabled")
+  dailySummaryTime      String?  @map("daily_summary_time")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
