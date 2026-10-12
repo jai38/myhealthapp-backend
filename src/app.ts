@@ -29,9 +29,14 @@ import {
   InMemoryExtractionJobRepository,
   InMemoryPrescriptionRepository,
   InMemoryUploadIntentRepository,
+  TimelineRepository,
+  PrismaTimelineRepository,
+  InMemoryTimelineRepository,
 } from './modules/persistence/repositories.js';
 import { createDocumentRouter } from './modules/documents/routes.js';
 import { createPrescriptionRouter } from './modules/prescriptions/routes.js';
+import { TimelineService } from './modules/timeline/timeline-service.js';
+import { createTimelineRouter } from './modules/timeline/routes.js';
 
 export interface AppOptions {
   storageProvider?: StorageProvider;
@@ -39,10 +44,12 @@ export interface AppOptions {
   documentService?: DocumentService;
   jobQueue?: ExtractionJobQueue;
   prescriptionService?: PrescriptionService;
+  timelineService?: TimelineService;
   docRepo?: DocumentRepository;
   jobRepo?: ExtractionJobRepository;
   prescriptionRepo?: PrescriptionRepository;
   uploadIntentRepo?: UploadIntentRepository;
+  timelineRepo?: TimelineRepository;
 }
 
 export const createApp = (options?: AppOptions): Express => {
@@ -149,6 +156,18 @@ export const createApp = (options?: AppOptions): Express => {
   const prescriptionService =
     options?.prescriptionService ?? new PrescriptionService(prescriptionRepo);
 
+  const timelineRepo =
+    options?.timelineRepo ??
+    (useInMemoryDb
+      ? new InMemoryTimelineRepository(
+          prescriptionRepo as InMemoryPrescriptionRepository,
+          docRepo as InMemoryDocumentRepository
+        )
+      : new PrismaTimelineRepository());
+
+  const timelineService =
+    options?.timelineService ?? new TimelineService(timelineRepo, documentService);
+
   // Module routers mounted under API_PREFIX
   app.use(
     `${env.API_PREFIX}/documents`,
@@ -160,6 +179,12 @@ export const createApp = (options?: AppOptions): Express => {
     `${env.API_PREFIX}/prescriptions`,
     authMiddleware,
     createPrescriptionRouter(jobQueue, prescriptionService)
+  );
+
+  app.use(
+    `${env.API_PREFIX}/timeline`,
+    authMiddleware,
+    createTimelineRouter(timelineService)
   );
 
   app.use(errorHandler);

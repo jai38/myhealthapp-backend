@@ -239,6 +239,8 @@ model TimelineEvent {
   patientProfileId     String   @map("patient_profile_id") @db.Uuid
   eventType            String   @default("PRESCRIPTION_RECORDED") @map("event_type")
   eventDate            DateTime @map("event_date") @db.Date
+  dateIsUncertain      Boolean  @default(false) @map("date_is_uncertain")
+  datePrecision        String   @default("EXACT") @map("date_precision")
   title                String
   summary              String
   sourceDocumentId     String   @map("source_document_id") @db.Uuid

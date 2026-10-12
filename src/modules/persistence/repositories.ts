@@ -84,6 +84,8 @@ export interface TimelineEventRecord {
   patientProfileId: string;
   eventType: string;
   eventDate: string;
+  dateIsUncertain?: boolean;
+  datePrecision?: string;
   title: string;
   summary: string;
   sourceDocumentId: string;
@@ -91,6 +93,46 @@ export interface TimelineEventRecord {
   isVerified: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface TimelineFilterOptions {
+  search?: string;
+  year?: number;
+  category?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface TimelineEventDetailRecord extends TimelineEventRecord {
+  sourceDocument?: {
+    id: string;
+    originalFilename: string;
+    mimeType: string;
+    fileSizeBytes: number;
+    pageCount?: number | null;
+    uploadedAt: Date;
+  };
+  prescription?: {
+    id: string;
+    prescriptionDate?: string;
+    dateIsUncertain: boolean;
+    doctorName?: string;
+    clinicHospitalName?: string;
+    diagnosis?: string;
+    confirmedAt: Date;
+    items: PrescriptionItemRecord[];
+  };
+}
+
+export interface TimelineRepository {
+  listTimelineEvents(
+    patientProfileId: string,
+    options?: TimelineFilterOptions
+  ): Promise<{ events: TimelineEventDetailRecord[]; totalCount: number }>;
+  getTimelineEventById(
+    id: string,
+    patientProfileId: string
+  ): Promise<TimelineEventDetailRecord | null>;
 }
 
 export interface ConfirmPrescriptionTransactionInput {
@@ -838,6 +880,8 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
           patientProfileId: input.patientProfileId,
           eventType: 'PRESCRIPTION_RECORDED',
           eventDate: parseDate(input.timelineEvent.eventDate) || now,
+          dateIsUncertain: input.prescription.dateIsUncertain,
+          datePrecision: input.prescription.dateIsUncertain ? 'UNCERTAIN' : 'EXACT',
           title: input.timelineEvent.title,
           summary: input.timelineEvent.summary,
           sourceDocumentId: input.documentId,
@@ -967,6 +1011,8 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
       patientProfileId: ev.patientProfileId,
       eventType: ev.eventType,
       eventDate: ev.eventDate.toISOString().split('T')[0] as string,
+      dateIsUncertain: ev.dateIsUncertain,
+      datePrecision: ev.datePrecision,
       title: ev.title,
       summary: ev.summary,
       sourceDocumentId: ev.sourceDocumentId,
@@ -975,6 +1021,215 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
       createdAt: ev.createdAt,
       updatedAt: ev.updatedAt,
     }));
+  }
+}
+
+export class PrismaTimelineRepository implements TimelineRepository {
+  constructor(private readonly prisma: PrismaClient = getPrismaClient()) {}
+
+  async listTimelineEvents(
+    patientProfileId: string,
+    options?: TimelineFilterOptions
+  ): Promise<{ events: TimelineEventDetailRecord[]; totalCount: number }> {
+    const where: any = {
+      patientProfileId,
+      isVerified: true,
+    };
+
+    if (options?.category && options.category !== 'ALL') {
+      if (options.category === 'PRESCRIPTION') {
+        where.eventType = { in: ['PRESCRIPTION', 'PRESCRIPTION_RECORDED'] };
+      } else {
+        where.eventType = options.category;
+      }
+    }
+
+    if (options?.year) {
+      const startOfYear = new Date(Date.UTC(options.year, 0, 1));
+      const endOfYear = new Date(Date.UTC(options.year + 1, 0, 1));
+      where.eventDate = {
+        gte: startOfYear,
+        lt: endOfYear,
+      };
+    }
+
+    if (options?.search && options.search.trim()) {
+      const q = options.search.trim();
+      where.OR = [
+        { title: { contains: q, mode: 'insensitive' } },
+        { summary: { contains: q, mode: 'insensitive' } },
+        {
+          sourcePrescription: {
+            OR: [
+              { doctorName: { contains: q, mode: 'insensitive' } },
+              { clinicHospitalName: { contains: q, mode: 'insensitive' } },
+              { diagnosis: { contains: q, mode: 'insensitive' } },
+              {
+                items: {
+                  some: {
+                    OR: [
+                      { nameAsWritten: { contains: q, mode: 'insensitive' } },
+                      { normalizedMedicineName: { contains: q, mode: 'insensitive' } },
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ];
+    }
+
+    const totalCount = await this.prisma.timelineEvent.count({ where });
+
+    const limit = Math.min(Math.max(options?.limit ?? 20, 1), 50);
+    const offset = Math.max(options?.offset ?? 0, 0);
+
+    const rows = await this.prisma.timelineEvent.findMany({
+      where,
+      include: {
+        sourceDocument: true,
+        sourcePrescription: {
+          include: {
+            items: true,
+          },
+        },
+      },
+      orderBy: [{ eventDate: 'desc' }, { createdAt: 'desc' }],
+      take: limit,
+      skip: offset,
+    });
+
+    const events: TimelineEventDetailRecord[] = rows.map((ev) => ({
+      id: ev.id,
+      patientProfileId: ev.patientProfileId,
+      eventType: ev.eventType,
+      eventDate: ev.eventDate.toISOString().split('T')[0] as string,
+      dateIsUncertain: ev.dateIsUncertain,
+      datePrecision: ev.datePrecision,
+      title: ev.title,
+      summary: ev.summary,
+      sourceDocumentId: ev.sourceDocumentId,
+      sourcePrescriptionId: ev.sourcePrescriptionId ?? undefined,
+      isVerified: ev.isVerified,
+      createdAt: ev.createdAt,
+      updatedAt: ev.updatedAt,
+      sourceDocument: ev.sourceDocument
+        ? {
+            id: ev.sourceDocument.id,
+            originalFilename: ev.sourceDocument.originalFilename,
+            mimeType: ev.sourceDocument.mimeType,
+            fileSizeBytes: ev.sourceDocument.fileSizeBytes,
+            pageCount: ev.sourceDocument.pageCount,
+            uploadedAt: ev.sourceDocument.uploadedAt,
+          }
+        : undefined,
+      prescription: ev.sourcePrescription
+        ? {
+            id: ev.sourcePrescription.id,
+            prescriptionDate: ev.sourcePrescription.prescriptionDate
+              ? ev.sourcePrescription.prescriptionDate.toISOString().split('T')[0]
+              : undefined,
+            dateIsUncertain: ev.sourcePrescription.dateIsUncertain,
+            doctorName: ev.sourcePrescription.doctorName ?? undefined,
+            clinicHospitalName: ev.sourcePrescription.clinicHospitalName ?? undefined,
+            diagnosis: ev.sourcePrescription.diagnosis ?? undefined,
+            confirmedAt: ev.sourcePrescription.confirmedAt,
+            items: ev.sourcePrescription.items.map((it) => ({
+              id: it.id,
+              prescriptionId: it.prescriptionId,
+              nameAsWritten: it.nameAsWritten,
+              normalizedMedicineName: it.normalizedMedicineName ?? undefined,
+              strength: it.strength ?? undefined,
+              dosageForm: it.dosageForm,
+              frequencyText: it.frequencyText ?? undefined,
+              durationText: it.durationText ?? undefined,
+              route: it.route,
+              instructions: it.instructions ?? undefined,
+              isActiveMedication: it.isActiveMedication,
+              sourceDocumentId: it.sourceDocumentId,
+              createdAt: it.createdAt,
+              updatedAt: it.updatedAt,
+            })),
+          }
+        : undefined,
+    }));
+
+    return { events, totalCount };
+  }
+
+  async getTimelineEventById(
+    id: string,
+    patientProfileId: string
+  ): Promise<TimelineEventDetailRecord | null> {
+    const ev = await this.prisma.timelineEvent.findFirst({
+      where: { id, patientProfileId },
+      include: {
+        sourceDocument: true,
+        sourcePrescription: {
+          include: {
+            items: true,
+          },
+        },
+      },
+    });
+
+    if (!ev) return null;
+
+    return {
+      id: ev.id,
+      patientProfileId: ev.patientProfileId,
+      eventType: ev.eventType,
+      eventDate: ev.eventDate.toISOString().split('T')[0] as string,
+      dateIsUncertain: ev.dateIsUncertain,
+      datePrecision: ev.datePrecision,
+      title: ev.title,
+      summary: ev.summary,
+      sourceDocumentId: ev.sourceDocumentId,
+      sourcePrescriptionId: ev.sourcePrescriptionId ?? undefined,
+      isVerified: ev.isVerified,
+      createdAt: ev.createdAt,
+      updatedAt: ev.updatedAt,
+      sourceDocument: ev.sourceDocument
+        ? {
+            id: ev.sourceDocument.id,
+            originalFilename: ev.sourceDocument.originalFilename,
+            mimeType: ev.sourceDocument.mimeType,
+            fileSizeBytes: ev.sourceDocument.fileSizeBytes,
+            pageCount: ev.sourceDocument.pageCount,
+            uploadedAt: ev.sourceDocument.uploadedAt,
+          }
+        : undefined,
+      prescription: ev.sourcePrescription
+        ? {
+            id: ev.sourcePrescription.id,
+            prescriptionDate: ev.sourcePrescription.prescriptionDate
+              ? ev.sourcePrescription.prescriptionDate.toISOString().split('T')[0]
+              : undefined,
+            dateIsUncertain: ev.sourcePrescription.dateIsUncertain,
+            doctorName: ev.sourcePrescription.doctorName ?? undefined,
+            clinicHospitalName: ev.sourcePrescription.clinicHospitalName ?? undefined,
+            diagnosis: ev.sourcePrescription.diagnosis ?? undefined,
+            confirmedAt: ev.sourcePrescription.confirmedAt,
+            items: ev.sourcePrescription.items.map((it) => ({
+              id: it.id,
+              prescriptionId: it.prescriptionId,
+              nameAsWritten: it.nameAsWritten,
+              normalizedMedicineName: it.normalizedMedicineName ?? undefined,
+              strength: it.strength ?? undefined,
+              dosageForm: it.dosageForm,
+              frequencyText: it.frequencyText ?? undefined,
+              durationText: it.durationText ?? undefined,
+              route: it.route,
+              instructions: it.instructions ?? undefined,
+              isActiveMedication: it.isActiveMedication,
+              sourceDocumentId: it.sourceDocumentId,
+              createdAt: it.createdAt,
+              updatedAt: it.updatedAt,
+            })),
+          }
+        : undefined,
+    };
   }
 }
 
@@ -1345,6 +1600,8 @@ export class InMemoryPrescriptionRepository implements PrescriptionRepository {
       patientProfileId: input.patientProfileId,
       eventType: 'PRESCRIPTION_RECORDED',
       eventDate: input.timelineEvent.eventDate,
+      dateIsUncertain: input.prescription.dateIsUncertain,
+      datePrecision: input.prescription.dateIsUncertain ? 'UNCERTAIN' : 'EXACT',
       title: input.timelineEvent.title,
       summary: input.timelineEvent.summary,
       sourceDocumentId: docId,
@@ -1387,5 +1644,152 @@ export class InMemoryPrescriptionRepository implements PrescriptionRepository {
   async listTimelineEvents(patientProfileId: string): Promise<TimelineEventRecord[]> {
     const list = this.timelineEvents.get(patientProfileId) || [];
     return list.map((e) => ({ ...e }));
+  }
+}
+
+export class InMemoryTimelineRepository implements TimelineRepository {
+  constructor(
+    private readonly prescriptionRepo: InMemoryPrescriptionRepository,
+    private readonly docRepo: InMemoryDocumentRepository
+  ) {}
+
+  async listTimelineEvents(
+    patientProfileId: string,
+    options?: TimelineFilterOptions
+  ): Promise<{ events: TimelineEventDetailRecord[]; totalCount: number }> {
+    const rawEvents = await this.prescriptionRepo.listTimelineEvents(patientProfileId);
+
+    let filtered = rawEvents.filter((ev) => ev.isVerified);
+
+    if (options?.category && options.category !== 'ALL') {
+      if (options.category === 'PRESCRIPTION') {
+        filtered = filtered.filter(
+          (e) => e.eventType === 'PRESCRIPTION' || e.eventType === 'PRESCRIPTION_RECORDED'
+        );
+      } else {
+        filtered = filtered.filter((e) => e.eventType === options.category);
+      }
+    }
+
+    if (options?.year) {
+      filtered = filtered.filter((e) => {
+        const yr = parseInt(e.eventDate.substring(0, 4), 10);
+        return yr === options.year;
+      });
+    }
+
+    if (options?.search && options.search.trim()) {
+      const q = options.search.trim().toLowerCase();
+      const matched: TimelineEventRecord[] = [];
+
+      for (const ev of filtered) {
+        if (ev.title.toLowerCase().includes(q) || ev.summary.toLowerCase().includes(q)) {
+          matched.push(ev);
+          continue;
+        }
+
+        if (ev.sourcePrescriptionId) {
+          const rxData = await this.prescriptionRepo.findById(
+            ev.sourcePrescriptionId,
+            patientProfileId
+          );
+          if (rxData) {
+            const docName = rxData.prescription.doctorName?.toLowerCase() || '';
+            const clinic = rxData.prescription.clinicHospitalName?.toLowerCase() || '';
+            const diag = rxData.prescription.diagnosis?.toLowerCase() || '';
+            const medMatch = rxData.items.some(
+              (i) =>
+                i.nameAsWritten.toLowerCase().includes(q) ||
+                (i.normalizedMedicineName && i.normalizedMedicineName.toLowerCase().includes(q))
+            );
+
+            if (docName.includes(q) || clinic.includes(q) || diag.includes(q) || medMatch) {
+              matched.push(ev);
+            }
+          }
+        }
+      }
+
+      filtered = matched;
+    }
+
+    // Stable sort: newest eventDate first, then newest createdAt
+    filtered.sort((a, b) => {
+      const dateCmp = b.eventDate.localeCompare(a.eventDate);
+      if (dateCmp !== 0) return dateCmp;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    });
+
+    const totalCount = filtered.length;
+    const limit = Math.min(Math.max(options?.limit ?? 20, 1), 50);
+    const offset = Math.max(options?.offset ?? 0, 0);
+    const pageSlice = filtered.slice(offset, offset + limit);
+
+    const detailedEvents: TimelineEventDetailRecord[] = [];
+
+    for (const ev of pageSlice) {
+      const hydrated = await this.hydrateEvent(ev, patientProfileId);
+      detailedEvents.push(hydrated);
+    }
+
+    return { events: detailedEvents, totalCount };
+  }
+
+  async getTimelineEventById(
+    id: string,
+    patientProfileId: string
+  ): Promise<TimelineEventDetailRecord | null> {
+    const rawEvents = await this.prescriptionRepo.listTimelineEvents(patientProfileId);
+    const ev = rawEvents.find((e) => e.id === id && e.patientProfileId === patientProfileId);
+    if (!ev) return null;
+
+    return this.hydrateEvent(ev, patientProfileId);
+  }
+
+  private async hydrateEvent(
+    ev: TimelineEventRecord,
+    patientProfileId: string
+  ): Promise<TimelineEventDetailRecord> {
+    let sourceDoc: TimelineEventDetailRecord['sourceDocument'];
+    let sourceRx: TimelineEventDetailRecord['prescription'];
+
+    const doc = await this.docRepo.findById(ev.sourceDocumentId);
+    if (doc && doc.patientProfileId === patientProfileId) {
+      sourceDoc = {
+        id: doc.id,
+        originalFilename: doc.originalFilename,
+        mimeType: doc.mimeType,
+        fileSizeBytes: doc.fileSizeBytes,
+        pageCount: doc.pageCount,
+        uploadedAt: doc.uploadedAt,
+      };
+    }
+
+    if (ev.sourcePrescriptionId) {
+      const rxResult = await this.prescriptionRepo.findById(
+        ev.sourcePrescriptionId,
+        patientProfileId
+      );
+      if (rxResult) {
+        sourceRx = {
+          id: rxResult.prescription.id,
+          prescriptionDate: rxResult.prescription.prescriptionDate,
+          dateIsUncertain: rxResult.prescription.dateIsUncertain,
+          doctorName: rxResult.prescription.doctorName,
+          clinicHospitalName: rxResult.prescription.clinicHospitalName,
+          diagnosis: rxResult.prescription.diagnosis,
+          confirmedAt: rxResult.prescription.confirmedAt,
+          items: rxResult.items,
+        };
+      }
+    }
+
+    return {
+      ...ev,
+      dateIsUncertain: ev.dateIsUncertain ?? false,
+      datePrecision: ev.datePrecision ?? 'EXACT',
+      sourceDocument: sourceDoc,
+      prescription: sourceRx,
+    };
   }
 }
