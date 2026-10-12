@@ -44,8 +44,16 @@ import { MedicationService } from './modules/medications/medication-service.js';
 import { createMedicationRouter } from './modules/medications/routes.js';
 import { ReportService } from './modules/reports/report-service.js';
 import { createReportRouter } from './modules/reports/routes.js';
+import {
+  AuthProviderAdapter,
+  MockAuthProviderAdapter,
+  DatabaseAuthProviderAdapter,
+} from './modules/auth/auth-adapter.js';
+import { createAuthRouter } from './modules/auth/routes.js';
+import { getPrismaClient } from './modules/persistence/database.js';
 
 export interface AppOptions {
+  authAdapter?: AuthProviderAdapter;
   storageProvider?: StorageProvider;
   extractionProvider?: PrescriptionExtractionProvider;
   documentService?: DocumentService;
@@ -68,7 +76,7 @@ export const createApp = (options?: AppOptions): Express => {
   app.use(helmet());
   app.use(
     cors({
-      origin: env.CLIENT_URL,
+      origin: env.CLIENT_URL === '*' ? true : env.CLIENT_URL,
       credentials: true,
     })
   );
@@ -87,7 +95,13 @@ export const createApp = (options?: AppOptions): Express => {
     });
   });
 
-  const authMiddleware = createAuthMiddleware();
+  const authAdapter =
+    options?.authAdapter ??
+    (env.AUTH_PROVIDER === 'node-internal'
+      ? new DatabaseAuthProviderAdapter(getPrismaClient())
+      : new MockAuthProviderAdapter());
+
+  const authMiddleware = createAuthMiddleware(authAdapter);
 
   // Foundation endpoint: Authenticated Patient Profile (derived server-side)
   app.get(
@@ -193,6 +207,11 @@ export const createApp = (options?: AppOptions): Express => {
 
   const medicationService =
     options?.medicationService ?? new MedicationService(medicationRepo, documentService);
+
+  app.use(
+    `${env.API_PREFIX}/auth`,
+    createAuthRouter(authAdapter, authMiddleware)
+  );
 
   // Module routers mounted under API_PREFIX
   app.use(

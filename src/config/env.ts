@@ -67,24 +67,26 @@ export function validateProductionConfig(config: typeof env = env): void {
   const storageSecretKey = process.env.STORAGE_SECRET_KEY;
 
   if (storageProvider === 'memory') {
-    violations.push('STORAGE_PROVIDER cannot be set to "memory" in production. Persistent S3-compatible storage is required.');
-  }
+    if (process.env.ALLOW_EPHEMERAL_STORAGE !== 'true') {
+      violations.push('STORAGE_PROVIDER cannot be set to "memory" in production. Persistent S3-compatible storage is required (or set ALLOW_EPHEMERAL_STORAGE=true for beta testing).');
+    }
+  } else {
+    if (!storageBucket || storageBucket.trim() === '') {
+      violations.push('STORAGE_BUCKET is required in production when using S3 storage.');
+    }
 
-  if (!storageBucket || storageBucket.trim() === '') {
-    violations.push('STORAGE_BUCKET is required in production.');
-  }
+    if (
+      !storageAccessKey ||
+      storageAccessKey === 'minioadmin' ||
+      !storageSecretKey ||
+      storageSecretKey === 'minioadminpassword'
+    ) {
+      violations.push('Storage credentials cannot use default development credentials in production.');
+    }
 
-  if (
-    !storageAccessKey ||
-    storageAccessKey === 'minioadmin' ||
-    !storageSecretKey ||
-    storageSecretKey === 'minioadminpassword'
-  ) {
-    violations.push('Storage credentials cannot use default development credentials in production.');
-  }
-
-  if (!storageEndpoint || storageEndpoint.includes('localhost:9000')) {
-    violations.push('STORAGE_ENDPOINT cannot use local development MinIO in production.');
+    if (!storageEndpoint || storageEndpoint.includes('localhost:9000')) {
+      violations.push('STORAGE_ENDPOINT cannot use local development MinIO in production.');
+    }
   }
 
   if (violations.length > 0) {

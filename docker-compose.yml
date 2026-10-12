@@ -20,10 +20,11 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    image: pgsty/minio:latest
     container_name: myhealthapp-minio
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    entrypoint: /bin/sh
+    command: -c "mkdir -p /data/myhealthapp-documents && minio server /data --console-address :9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadminpassword

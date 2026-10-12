@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: myhealthapp-backend
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: API_PREFIX
+        value: "/api/v1"
+      - key: AUTH_PROVIDER
+        value: "node-internal"
+      - key: CLIENT_URL
+        value: "*"
+      - key: DATABASE_URL
+        sync: false # Paste Supabase IPv4 Pooler URL in Render Dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: "7d"
+      - key: STORAGE_PROVIDER
+        value: "s3"
+      - key: STORAGE_ENDPOINT
+        value: "https://gmvcudlhjcxypbgvceef.storage.supabase.co/storage/v1/s3"
+      - key: STORAGE_REGION
+        value: "ap-south-1"
+      - key: STORAGE_BUCKET
+        value: "myhealthapp-documents"
+      - key: STORAGE_ACCESS_KEY
+        value: "1193741960e370afd7813c80c57c2b35"
+      - key: STORAGE_SECRET_KEY
+        sync: false # Paste Supabase Secret Access Key in Render Dashboard
+      - key: STORAGE_USE_SSL
+        value: "true"

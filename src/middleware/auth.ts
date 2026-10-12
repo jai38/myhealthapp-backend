@@ -17,7 +17,14 @@ declare global {
 
 // In-memory or database-backed resolver mapping userId -> patientProfileId
 const patientProfileResolver = async (userId: string): Promise<string> => {
-  // Deterministic mapping for testing, replaced by Prisma query in database layer
+  try {
+    const { getPrismaClient } = await import('../modules/persistence/database.js');
+    const client = getPrismaClient();
+    const profile = await client.patientProfile.findUnique({ where: { userId } });
+    if (profile) return profile.id;
+  } catch {
+    // In-memory / mock test fallback
+  }
   return `pat_${userId}`;
 };
 
@@ -39,7 +46,7 @@ export const createAuthMiddleware = (authAdapter: AuthProviderAdapter = new Mock
 
     try {
       const verified = await authAdapter.verifySessionToken(token);
-      const patientProfileId = await patientProfileResolver(verified.userId);
+      const patientProfileId = verified.patientProfileId || await patientProfileResolver(verified.userId);
 
       // Invariant: Derive patientProfileId exclusively from verified session, never client headers
       req.authContext = {
