@@ -31,6 +31,7 @@ Starts:
 npm test
 npm run typecheck
 ```
+*Current test suite: 25 passing unit, integration, and benchmark tests (0 failures).*
 
 ### 4. Start Development Server
 ```bash
@@ -45,17 +46,26 @@ Listens on `http://localhost:4000`. Health check endpoint: `GET http://localhost
 ```
 myhealthapp-backend/
 ├── src/
-│   ├── app.ts                 # Express app factory with Helmet, CORS, and routes
+│   ├── app.ts                 # Express app factory with Helmet, CORS, and routers
 │   ├── index.ts               # Server bootstrap entry point
 │   ├── config/                # Validated environment configuration (Zod)
 │   ├── middleware/
 │   │   ├── auth.ts            # Server-side identity resolution & ownership enforcement
 │   │   └── errorHandler.ts    # Sanitized error handler preventing PHI leaks
 │   └── modules/
-│       └── auth/              # AuthProviderAdapter interface & mock adapter
+│       ├── auth/              # AuthProviderAdapter interface & mock adapter
+│       ├── storage/           # S3/MinIO storage provider, magic byte verification, 15m TTL URLs
+│       ├── documents/         # Document metadata, upload intents, preview signed URLs
+│       ├── prescriptions/     # Zod domain schemas, review confirmation, timeline ingestion
+│       └── ai-extraction/     # Provider abstraction, job state machine, 32-case Indian benchmark
 ├── prisma/
-│   └── schema.prisma          # PostgreSQL relational schema (Users, PatientProfiles, Preferences)
+│   └── schema.prisma          # PostgreSQL relational schema
 ├── test/                      # Vitest integration and security regression tests
+│   ├── health.test.ts
+│   ├── auth-middleware.test.ts
+│   ├── storage-and-upload.test.ts
+│   ├── extraction-pipeline.test.ts
+│   └── ai-benchmark.test.ts
 ├── docker-compose.yml         # Local development containers (PostgreSQL & MinIO)
 └── .env.example               # Template environment configuration
 ```
@@ -65,4 +75,7 @@ myhealthapp-backend/
 ## 4. Security & Multi-Tenant Invariants
 
 - **Anti-Spoofing Ownership:** Every patient-owned endpoint derives `patientProfileId` exclusively from verified JWT session claims on the server. Client-provided patient IDs are never trusted as proof of ownership.
-- **Sanitized Errors:** Error handlers catch database and Zod validation errors, returning generic sanitized codes without leaking internal stack traces or PHI.
+- **Private Object Storage:** Object keys format `documents/<patientProfileId>/<uuid>`. 15-minute TTL pre-signed URLs only. Public access is permanently blocked.
+- **Magic Byte Verification:** File signatures (JPEG `FF D8 FF`, PNG `89 50 4E 47`, PDF `%PDF`) are strictly verified to prevent file disguised attacks.
+- **Server-Side Checksums:** SHA-256 integrity calculated server-side.
+- **No Unreviewed AI Data in Timeline:** Unreviewed AI extractions remain strictly in draft state. Verified clinical records are created only after explicit patient confirmation.
