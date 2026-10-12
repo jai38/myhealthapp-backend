@@ -57,6 +57,14 @@ enum DoseStatus {
   MISSED
 }
 
+enum MedicationStatus {
+  INACTIVE
+  ACTIVE
+  PAUSED
+  COMPLETED
+  DISCONTINUED
+}
+
 model User {
   id            String        @id @default(uuid()) @db.Uuid
   email         String        @unique
@@ -90,6 +98,8 @@ model PatientProfile {
   extractionJobs  ExtractionJob[]
   prescriptions   Prescription[]
   timelineEvents  TimelineEvent[]
+  medications     Medication[]
+  doseLogs        DoseLog[]
 
   @@map("patient_profiles")
 }
@@ -128,6 +138,7 @@ model Document {
   prescriptions     Prescription[]
   prescriptionItems PrescriptionItem[]
   timelineEvents    TimelineEvent[]
+  medications       Medication[]
 
   @@index([patientProfileId])
   @@map("documents")
@@ -204,6 +215,7 @@ model Prescription {
   confirmedByUser User               @relation("ConfirmedPrescriptions", fields: [confirmedByUserId], references: [id])
   items           PrescriptionItem[]
   timelineEvents  TimelineEvent[]
+  medications     Medication[]
 
   @@index([patientProfileId])
   @@index([documentId])
@@ -228,6 +240,7 @@ model PrescriptionItem {
 
   prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
   sourceDocument Document     @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  medication     Medication?
 
   @@index([prescriptionId])
   @@index([sourceDocumentId])
@@ -256,4 +269,58 @@ model TimelineEvent {
   @@index([patientProfileId])
   @@index([eventDate])
   @@map("timeline_events")
+}
+
+model Medication {
+  id                     String           @id @default(uuid()) @db.Uuid
+  patientProfileId       String           @map("patient_profile_id") @db.Uuid
+  prescriptionItemId     String?          @unique @map("prescription_item_id") @db.Uuid
+  prescriptionId         String?          @map("prescription_id") @db.Uuid
+  sourceDocumentId       String?          @map("source_document_id") @db.Uuid
+  nameAsWritten          String           @map("name_as_written")
+  normalizedMedicineName String?          @map("normalized_medicine_name")
+  strength               String?
+  dosageForm             String           @map("dosage_form")
+  route                  String           @default("ORAL")
+  prescribedInstructions String?          @map("prescribed_instructions")
+  status                 MedicationStatus @default(INACTIVE)
+  startDate              DateTime?        @map("start_date") @db.Date
+  endDate                DateTime?        @map("end_date") @db.Date
+  reminderTimes          Json?            @map("reminder_times")
+  notes                  String?
+  discontinuedReason     String?          @map("discontinued_reason")
+  discontinuedAt         DateTime?        @map("discontinued_at")
+  completedAt            DateTime?        @map("completed_at")
+  createdAt              DateTime         @default(now()) @map("created_at")
+  updatedAt              DateTime         @updatedAt @map("updated_at")
+
+  patientProfile   PatientProfile    @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  prescriptionItem PrescriptionItem? @relation(fields: [prescriptionItemId], references: [id], onDelete: SetNull)
+  prescription     Prescription?     @relation(fields: [prescriptionId], references: [id], onDelete: SetNull)
+  sourceDocument   Document?         @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  doseLogs         DoseLog[]
+
+  @@index([patientProfileId])
+  @@index([status])
+  @@map("medications")
+}
+
+model DoseLog {
+  id               String     @id @default(uuid()) @db.Uuid
+  medicationId     String     @map("medication_id") @db.Uuid
+  patientProfileId String     @map("patient_profile_id") @db.Uuid
+  scheduledTime    DateTime   @map("scheduled_time")
+  status           DoseStatus @default(PENDING)
+  actionTime       DateTime?  @map("action_time")
+  snoozeMinutes    Int?       @map("snooze_minutes")
+  notes            String?
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  medication     Medication     @relation(fields: [medicationId], references: [id], onDelete: Cascade)
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([medicationId, scheduledTime])
+  @@index([patientProfileId, scheduledTime])
+  @@map("dose_logs")
 }

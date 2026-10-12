@@ -32,11 +32,16 @@ import {
   TimelineRepository,
   PrismaTimelineRepository,
   InMemoryTimelineRepository,
+  MedicationRepository,
+  PrismaMedicationRepository,
+  InMemoryMedicationRepository,
 } from './modules/persistence/repositories.js';
 import { createDocumentRouter } from './modules/documents/routes.js';
 import { createPrescriptionRouter } from './modules/prescriptions/routes.js';
 import { TimelineService } from './modules/timeline/timeline-service.js';
 import { createTimelineRouter } from './modules/timeline/routes.js';
+import { MedicationService } from './modules/medications/medication-service.js';
+import { createMedicationRouter } from './modules/medications/routes.js';
 
 export interface AppOptions {
   storageProvider?: StorageProvider;
@@ -45,11 +50,13 @@ export interface AppOptions {
   jobQueue?: ExtractionJobQueue;
   prescriptionService?: PrescriptionService;
   timelineService?: TimelineService;
+  medicationService?: MedicationService;
   docRepo?: DocumentRepository;
   jobRepo?: ExtractionJobRepository;
   prescriptionRepo?: PrescriptionRepository;
   uploadIntentRepo?: UploadIntentRepository;
   timelineRepo?: TimelineRepository;
+  medicationRepo?: MedicationRepository;
 }
 
 export const createApp = (options?: AppOptions): Express => {
@@ -168,6 +175,22 @@ export const createApp = (options?: AppOptions): Express => {
   const timelineService =
     options?.timelineService ?? new TimelineService(timelineRepo, documentService);
 
+  const medicationRepo =
+    options?.medicationRepo ??
+    (useInMemoryDb
+      ? new InMemoryMedicationRepository(
+          prescriptionRepo as InMemoryPrescriptionRepository,
+          docRepo as InMemoryDocumentRepository
+        )
+      : new PrismaMedicationRepository());
+
+  if (useInMemoryDb && prescriptionRepo instanceof InMemoryPrescriptionRepository) {
+    prescriptionRepo.setMedicationRepository(medicationRepo as InMemoryMedicationRepository);
+  }
+
+  const medicationService =
+    options?.medicationService ?? new MedicationService(medicationRepo, documentService);
+
   // Module routers mounted under API_PREFIX
   app.use(
     `${env.API_PREFIX}/documents`,
@@ -185,6 +208,12 @@ export const createApp = (options?: AppOptions): Express => {
     `${env.API_PREFIX}/timeline`,
     authMiddleware,
     createTimelineRouter(timelineService)
+  );
+
+  app.use(
+    `${env.API_PREFIX}/medications`,
+    authMiddleware,
+    createMedicationRouter(medicationService)
   );
 
   app.use(errorHandler);

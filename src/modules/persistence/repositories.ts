@@ -135,6 +135,109 @@ export interface TimelineRepository {
   ): Promise<TimelineEventDetailRecord | null>;
 }
 
+export type MedicationStatusType = 'INACTIVE' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'DISCONTINUED';
+export type DoseStatusType = 'PENDING' | 'TAKEN' | 'SKIPPED' | 'SNOOZED' | 'MISSED';
+
+export interface MedicationRecord {
+  id: string;
+  patientProfileId: string;
+  prescriptionItemId?: string | null;
+  prescriptionId?: string | null;
+  sourceDocumentId?: string | null;
+  nameAsWritten: string;
+  normalizedMedicineName?: string | null;
+  strength?: string | null;
+  dosageForm: string;
+  route: string;
+  prescribedInstructions?: string | null;
+  status: MedicationStatusType;
+  startDate?: string | null;
+  endDate?: string | null;
+  reminderTimes?: string[] | null;
+  notes?: string | null;
+  discontinuedReason?: string | null;
+  discontinuedAt?: Date | null;
+  completedAt?: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface DoseLogRecord {
+  id: string;
+  medicationId: string;
+  patientProfileId: string;
+  scheduledTime: Date;
+  status: DoseStatusType;
+  actionTime?: Date | null;
+  snoozeMinutes?: number | null;
+  notes?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface MedicationDetailRecord extends MedicationRecord {
+  prescription?: {
+    id: string;
+    prescriptionDate?: string | null;
+    doctorName?: string | null;
+    clinicHospitalName?: string | null;
+  } | null;
+  sourceDocument?: {
+    id: string;
+    originalFilename: string;
+    mimeType: string;
+  } | null;
+  doseLogs?: DoseLogRecord[];
+}
+
+export interface CreateMedicationInput {
+  patientProfileId: string;
+  nameAsWritten: string;
+  normalizedMedicineName?: string;
+  strength?: string;
+  dosageForm: string;
+  route?: string;
+  prescribedInstructions?: string;
+  status?: MedicationStatusType;
+  startDate?: string;
+  endDate?: string;
+  reminderTimes?: string[];
+  prescriptionItemId?: string;
+  prescriptionId?: string;
+  sourceDocumentId?: string;
+  notes?: string;
+}
+
+export interface MedicationRepository {
+  createMedication(input: CreateMedicationInput): Promise<MedicationRecord>;
+  listMedications(patientProfileId: string, status?: MedicationStatusType): Promise<MedicationRecord[]>;
+  getMedicationById(id: string, patientProfileId: string): Promise<MedicationDetailRecord | null>;
+  updateMedicationStatus(
+    id: string,
+    patientProfileId: string,
+    status: MedicationStatusType,
+    meta?: { discontinuedReason?: string; completedAt?: Date; discontinuedAt?: Date }
+  ): Promise<MedicationRecord>;
+  updateReminderSchedule(
+    id: string,
+    patientProfileId: string,
+    reminderTimes: string[],
+    startDate?: string,
+    endDate?: string
+  ): Promise<MedicationRecord>;
+  createDoseLogs(logs: Array<{ medicationId: string; patientProfileId: string; scheduledTime: Date }>): Promise<DoseLogRecord[]>;
+  listDoseLogs(patientProfileId: string, from: Date, to: Date): Promise<DoseLogRecord[]>;
+  getDoseLogById(id: string, patientProfileId: string): Promise<DoseLogRecord | null>;
+  updateDoseAction(
+    id: string,
+    patientProfileId: string,
+    status: DoseStatusType,
+    actionTime: Date,
+    meta?: { snoozeMinutes?: number; notes?: string }
+  ): Promise<DoseLogRecord>;
+  cancelPendingDosesForMedication(medicationId: string, patientProfileId: string, fromDate?: Date): Promise<number>;
+}
+
 export interface ConfirmPrescriptionTransactionInput {
   patientProfileId: string;
   documentId: string;
@@ -873,6 +976,29 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
         data: itemRows,
       });
 
+      // 4b. Create corresponding Medication records
+      const medicationRows = itemRows.map((item) => ({
+        id: crypto.randomUUID(),
+        patientProfileId: input.patientProfileId,
+        prescriptionItemId: item.id,
+        prescriptionId,
+        sourceDocumentId: input.documentId,
+        nameAsWritten: item.nameAsWritten,
+        normalizedMedicineName: item.normalizedMedicineName,
+        strength: item.strength,
+        dosageForm: item.dosageForm,
+        route: item.route,
+        prescribedInstructions: item.instructions || item.frequencyText,
+        status: item.isActiveMedication ? ('ACTIVE' as const) : ('INACTIVE' as const),
+        startDate: parseDate(input.prescription.prescriptionDate),
+        createdAt: now,
+        updatedAt: now,
+      }));
+
+      await tx.medication.createMany({
+        data: medicationRows,
+      });
+
       // 5. Ingest into Verified Clinical Timeline
       const createdTimeline = await tx.timelineEvent.create({
         data: {
@@ -1233,6 +1359,314 @@ export class PrismaTimelineRepository implements TimelineRepository {
   }
 }
 
+export class PrismaMedicationRepository implements MedicationRepository {
+  constructor(private readonly prisma: PrismaClient = getPrismaClient()) {}
+
+  async createMedication(input: CreateMedicationInput): Promise<MedicationRecord> {
+    const parseDate = (d?: string) => (d ? new Date(d) : undefined);
+    const created = await this.prisma.medication.create({
+      data: {
+        patientProfileId: input.patientProfileId,
+        nameAsWritten: input.nameAsWritten,
+        normalizedMedicineName: input.normalizedMedicineName,
+        strength: input.strength,
+        dosageForm: input.dosageForm,
+        route: input.route || 'ORAL',
+        prescribedInstructions: input.prescribedInstructions,
+        status: input.status || 'INACTIVE',
+        startDate: parseDate(input.startDate),
+        endDate: parseDate(input.endDate),
+        reminderTimes: input.reminderTimes ?? undefined,
+        prescriptionItemId: input.prescriptionItemId,
+        prescriptionId: input.prescriptionId,
+        sourceDocumentId: input.sourceDocumentId,
+        notes: input.notes,
+      },
+    });
+
+    return this.mapMedication(created);
+  }
+
+  async listMedications(
+    patientProfileId: string,
+    status?: MedicationStatusType
+  ): Promise<MedicationRecord[]> {
+    const meds = await this.prisma.medication.findMany({
+      where: {
+        patientProfileId,
+        ...(status ? { status } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    return meds.map((m) => this.mapMedication(m));
+  }
+
+  async getMedicationById(
+    id: string,
+    patientProfileId: string
+  ): Promise<MedicationDetailRecord | null> {
+    const med = await this.prisma.medication.findFirst({
+      where: { id, patientProfileId },
+      include: {
+        prescription: true,
+        sourceDocument: true,
+        doseLogs: {
+          orderBy: { scheduledTime: 'desc' },
+          take: 50,
+        },
+      },
+    });
+
+    if (!med) return null;
+
+    return {
+      ...this.mapMedication(med),
+      prescription: med.prescription
+        ? {
+            id: med.prescription.id,
+            prescriptionDate: med.prescription.prescriptionDate
+              ? med.prescription.prescriptionDate.toISOString().split('T')[0]
+              : undefined,
+            doctorName: med.prescription.doctorName ?? undefined,
+            clinicHospitalName: med.prescription.clinicHospitalName ?? undefined,
+          }
+        : undefined,
+      sourceDocument: med.sourceDocument
+        ? {
+            id: med.sourceDocument.id,
+            originalFilename: med.sourceDocument.originalFilename,
+            mimeType: med.sourceDocument.mimeType,
+          }
+        : undefined,
+      doseLogs: med.doseLogs.map((dl) => ({
+        id: dl.id,
+        medicationId: dl.medicationId,
+        patientProfileId: dl.patientProfileId,
+        scheduledTime: dl.scheduledTime,
+        status: dl.status as DoseStatusType,
+        actionTime: dl.actionTime ?? undefined,
+        snoozeMinutes: dl.snoozeMinutes ?? undefined,
+        notes: dl.notes ?? undefined,
+        createdAt: dl.createdAt,
+        updatedAt: dl.updatedAt,
+      })),
+    };
+  }
+
+  async updateMedicationStatus(
+    id: string,
+    patientProfileId: string,
+    status: MedicationStatusType,
+    meta?: { discontinuedReason?: string; completedAt?: Date; discontinuedAt?: Date }
+  ): Promise<MedicationRecord> {
+    const existing = await this.prisma.medication.findFirst({
+      where: { id, patientProfileId },
+    });
+    if (!existing) {
+      throw new Error(`Medication not found or not owned by patient: ${id}`);
+    }
+
+    const updated = await this.prisma.medication.update({
+      where: { id },
+      data: {
+        status,
+        discontinuedReason: meta?.discontinuedReason,
+        discontinuedAt: meta?.discontinuedAt,
+        completedAt: meta?.completedAt,
+      },
+    });
+    return this.mapMedication(updated);
+  }
+
+  async updateReminderSchedule(
+    id: string,
+    patientProfileId: string,
+    reminderTimes: string[],
+    startDate?: string,
+    endDate?: string
+  ): Promise<MedicationRecord> {
+    const existing = await this.prisma.medication.findFirst({
+      where: { id, patientProfileId },
+    });
+    if (!existing) {
+      throw new Error(`Medication not found or not owned by patient: ${id}`);
+    }
+
+    const parseDate = (d?: string) => (d ? new Date(d) : undefined);
+    const updated = await this.prisma.medication.update({
+      where: { id },
+      data: {
+        reminderTimes,
+        ...(startDate !== undefined ? { startDate: parseDate(startDate) } : {}),
+        ...(endDate !== undefined ? { endDate: parseDate(endDate) } : {}),
+      },
+    });
+    return this.mapMedication(updated);
+  }
+
+  async createDoseLogs(
+    logs: Array<{ medicationId: string; patientProfileId: string; scheduledTime: Date }>
+  ): Promise<DoseLogRecord[]> {
+    if (logs.length === 0) return [];
+    const first = logs[0];
+    if (!first) return [];
+
+    await this.prisma.doseLog.createMany({
+      data: logs.map((l) => ({
+        medicationId: l.medicationId,
+        patientProfileId: l.patientProfileId,
+        scheduledTime: l.scheduledTime,
+        status: 'PENDING',
+      })),
+      skipDuplicates: true,
+    });
+
+    const created = await this.prisma.doseLog.findMany({
+      where: {
+        patientProfileId: first.patientProfileId,
+        medicationId: { in: logs.map((l) => l.medicationId) },
+        scheduledTime: { in: logs.map((l) => l.scheduledTime) },
+      },
+      orderBy: { scheduledTime: 'asc' },
+    });
+
+    return created.map((dl) => ({
+      id: dl.id,
+      medicationId: dl.medicationId,
+      patientProfileId: dl.patientProfileId,
+      scheduledTime: dl.scheduledTime,
+      status: dl.status as DoseStatusType,
+      actionTime: dl.actionTime ?? undefined,
+      snoozeMinutes: dl.snoozeMinutes ?? undefined,
+      notes: dl.notes ?? undefined,
+      createdAt: dl.createdAt,
+      updatedAt: dl.updatedAt,
+    }));
+  }
+
+  async listDoseLogs(patientProfileId: string, from: Date, to: Date): Promise<DoseLogRecord[]> {
+    const list = await this.prisma.doseLog.findMany({
+      where: {
+        patientProfileId,
+        scheduledTime: { gte: from, lte: to },
+      },
+      orderBy: { scheduledTime: 'asc' },
+    });
+
+    return list.map((dl) => ({
+      id: dl.id,
+      medicationId: dl.medicationId,
+      patientProfileId: dl.patientProfileId,
+      scheduledTime: dl.scheduledTime,
+      status: dl.status as DoseStatusType,
+      actionTime: dl.actionTime ?? undefined,
+      snoozeMinutes: dl.snoozeMinutes ?? undefined,
+      notes: dl.notes ?? undefined,
+      createdAt: dl.createdAt,
+      updatedAt: dl.updatedAt,
+    }));
+  }
+
+  async getDoseLogById(id: string, patientProfileId: string): Promise<DoseLogRecord | null> {
+    const dl = await this.prisma.doseLog.findFirst({
+      where: { id, patientProfileId },
+    });
+    if (!dl) return null;
+    return {
+      id: dl.id,
+      medicationId: dl.medicationId,
+      patientProfileId: dl.patientProfileId,
+      scheduledTime: dl.scheduledTime,
+      status: dl.status as DoseStatusType,
+      actionTime: dl.actionTime ?? undefined,
+      snoozeMinutes: dl.snoozeMinutes ?? undefined,
+      notes: dl.notes ?? undefined,
+      createdAt: dl.createdAt,
+      updatedAt: dl.updatedAt,
+    };
+  }
+
+  async updateDoseAction(
+    id: string,
+    patientProfileId: string,
+    status: DoseStatusType,
+    actionTime: Date,
+    meta?: { snoozeMinutes?: number; notes?: string }
+  ): Promise<DoseLogRecord> {
+    const existing = await this.prisma.doseLog.findFirst({
+      where: { id, patientProfileId },
+    });
+    if (!existing) {
+      throw new Error(`Dose log not found or not owned by patient: ${id}`);
+    }
+
+    const updated = await this.prisma.doseLog.update({
+      where: { id },
+      data: {
+        status,
+        actionTime,
+        snoozeMinutes: meta?.snoozeMinutes,
+        notes: meta?.notes,
+      },
+    });
+
+    return {
+      id: updated.id,
+      medicationId: updated.medicationId,
+      patientProfileId: updated.patientProfileId,
+      scheduledTime: updated.scheduledTime,
+      status: updated.status as DoseStatusType,
+      actionTime: updated.actionTime ?? undefined,
+      snoozeMinutes: updated.snoozeMinutes ?? undefined,
+      notes: updated.notes ?? undefined,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    };
+  }
+
+  async cancelPendingDosesForMedication(
+    medicationId: string,
+    patientProfileId: string,
+    fromDate: Date = new Date()
+  ): Promise<number> {
+    const res = await this.prisma.doseLog.deleteMany({
+      where: {
+        medicationId,
+        patientProfileId,
+        status: 'PENDING',
+        scheduledTime: { gte: fromDate },
+      },
+    });
+    return res.count;
+  }
+
+  private mapMedication(m: any): MedicationRecord {
+    return {
+      id: m.id,
+      patientProfileId: m.patientProfileId,
+      prescriptionItemId: m.prescriptionItemId ?? undefined,
+      prescriptionId: m.prescriptionId ?? undefined,
+      sourceDocumentId: m.sourceDocumentId ?? undefined,
+      nameAsWritten: m.nameAsWritten,
+      normalizedMedicineName: m.normalizedMedicineName ?? undefined,
+      strength: m.strength ?? undefined,
+      dosageForm: m.dosageForm,
+      route: m.route,
+      prescribedInstructions: m.prescribedInstructions ?? undefined,
+      status: m.status as MedicationStatusType,
+      startDate: m.startDate ? m.startDate.toISOString().split('T')[0] : undefined,
+      endDate: m.endDate ? m.endDate.toISOString().split('T')[0] : undefined,
+      reminderTimes: Array.isArray(m.reminderTimes) ? m.reminderTimes : undefined,
+      notes: m.notes ?? undefined,
+      discontinuedReason: m.discontinuedReason ?? undefined,
+      discontinuedAt: m.discontinuedAt ?? undefined,
+      completedAt: m.completedAt ?? undefined,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+    };
+  }
+}
+
 // ==========================================
 // IN-MEMORY / TEST DOUBLE IMPLEMENTATIONS
 // ==========================================
@@ -1527,8 +1961,13 @@ export class InMemoryPrescriptionRepository implements PrescriptionRepository {
 
   constructor(
     private readonly jobRepo: ExtractionJobRepository,
-    private readonly docRepo: DocumentRepository
+    private readonly docRepo: DocumentRepository,
+    public medicationRepo?: InMemoryMedicationRepository
   ) {}
+
+  setMedicationRepository(repo: InMemoryMedicationRepository) {
+    this.medicationRepo = repo;
+  }
 
   async confirmPrescriptionTransaction(
     input: ConfirmPrescriptionTransactionInput
@@ -1618,6 +2057,25 @@ export class InMemoryPrescriptionRepository implements PrescriptionRepository {
     const patientEvents = this.timelineEvents.get(input.patientProfileId) || [];
     patientEvents.unshift(timelineEvent);
     this.timelineEvents.set(input.patientProfileId, patientEvents);
+
+    if (this.medicationRepo) {
+      for (const it of itemRecords) {
+        await this.medicationRepo.createMedication({
+          patientProfileId: input.patientProfileId,
+          nameAsWritten: it.nameAsWritten,
+          normalizedMedicineName: it.normalizedMedicineName,
+          strength: it.strength,
+          dosageForm: it.dosageForm,
+          route: it.route,
+          prescribedInstructions: it.instructions || it.frequencyText,
+          status: it.isActiveMedication ? 'ACTIVE' : 'INACTIVE',
+          startDate: input.prescription.prescriptionDate,
+          prescriptionItemId: it.id,
+          prescriptionId,
+          sourceDocumentId: docId,
+        });
+      }
+    }
 
     this.confirmedJobIds.add(input.jobId);
     job.confirmedAt = now;
@@ -1791,5 +2249,259 @@ export class InMemoryTimelineRepository implements TimelineRepository {
       sourceDocument: sourceDoc,
       prescription: sourceRx,
     };
+  }
+}
+
+export class InMemoryMedicationRepository implements MedicationRepository {
+  private medications: Map<string, MedicationRecord> = new Map();
+  private doseLogs: Map<string, DoseLogRecord> = new Map();
+
+  constructor(
+    private prescriptionRepo?: InMemoryPrescriptionRepository,
+    private docRepo?: DocumentRepository
+  ) {}
+
+  setPrescriptionRepo(rxRepo: InMemoryPrescriptionRepository) {
+    this.prescriptionRepo = rxRepo;
+  }
+
+  setDocRepo(docRepo: DocumentRepository) {
+    this.docRepo = docRepo;
+  }
+
+  async createMedication(input: CreateMedicationInput): Promise<MedicationRecord> {
+    const id = crypto.randomUUID();
+    const now = new Date();
+    const record: MedicationRecord = {
+      id,
+      patientProfileId: input.patientProfileId,
+      prescriptionItemId: input.prescriptionItemId,
+      prescriptionId: input.prescriptionId,
+      sourceDocumentId: input.sourceDocumentId,
+      nameAsWritten: input.nameAsWritten,
+      normalizedMedicineName: input.normalizedMedicineName,
+      strength: input.strength,
+      dosageForm: input.dosageForm,
+      route: input.route || 'ORAL',
+      prescribedInstructions: input.prescribedInstructions,
+      status: input.status || 'INACTIVE',
+      startDate: input.startDate,
+      endDate: input.endDate,
+      reminderTimes: input.reminderTimes,
+      notes: input.notes,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.medications.set(id, record);
+    return { ...record };
+  }
+
+  async listMedications(
+    patientProfileId: string,
+    status?: MedicationStatusType
+  ): Promise<MedicationRecord[]> {
+    const list: MedicationRecord[] = [];
+    for (const med of this.medications.values()) {
+      if (med.patientProfileId === patientProfileId) {
+        if (!status || med.status === status) {
+          list.push({ ...med });
+        }
+      }
+    }
+    return list.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+  }
+
+  async getMedicationById(
+    id: string,
+    patientProfileId: string
+  ): Promise<MedicationDetailRecord | null> {
+    const med = this.medications.get(id);
+    if (!med || med.patientProfileId !== patientProfileId) return null;
+
+    let prescriptionData: MedicationDetailRecord['prescription'];
+    if (med.prescriptionId && this.prescriptionRepo) {
+      const rx = await this.prescriptionRepo.findById(med.prescriptionId, patientProfileId);
+      if (rx) {
+        prescriptionData = {
+          id: rx.prescription.id,
+          prescriptionDate: rx.prescription.prescriptionDate,
+          doctorName: rx.prescription.doctorName,
+          clinicHospitalName: rx.prescription.clinicHospitalName,
+        };
+      }
+    }
+
+    let sourceDocData: MedicationDetailRecord['sourceDocument'];
+    if (med.sourceDocumentId && this.docRepo) {
+      const doc = await this.docRepo.findById(med.sourceDocumentId);
+      if (doc) {
+        sourceDocData = {
+          id: doc.id,
+          originalFilename: doc.originalFilename,
+          mimeType: doc.mimeType,
+        };
+      }
+    }
+
+    const doses: DoseLogRecord[] = [];
+    for (const dl of this.doseLogs.values()) {
+      if (dl.medicationId === id && dl.patientProfileId === patientProfileId) {
+        doses.push({ ...dl });
+      }
+    }
+    doses.sort((a, b) => b.scheduledTime.getTime() - a.scheduledTime.getTime());
+
+    return {
+      ...med,
+      prescription: prescriptionData,
+      sourceDocument: sourceDocData,
+      doseLogs: doses,
+    };
+  }
+
+  async updateMedicationStatus(
+    id: string,
+    patientProfileId: string,
+    status: MedicationStatusType,
+    meta?: { discontinuedReason?: string; completedAt?: Date; discontinuedAt?: Date }
+  ): Promise<MedicationRecord> {
+    const med = this.medications.get(id);
+    if (!med || med.patientProfileId !== patientProfileId) {
+      throw new Error('Medication not found');
+    }
+
+    const updated: MedicationRecord = {
+      ...med,
+      status,
+      discontinuedReason: meta?.discontinuedReason,
+      discontinuedAt: meta?.discontinuedAt,
+      completedAt: meta?.completedAt,
+      updatedAt: new Date(),
+    };
+    this.medications.set(id, updated);
+    return { ...updated };
+  }
+
+  async updateReminderSchedule(
+    id: string,
+    patientProfileId: string,
+    reminderTimes: string[],
+    startDate?: string,
+    endDate?: string
+  ): Promise<MedicationRecord> {
+    const med = this.medications.get(id);
+    if (!med || med.patientProfileId !== patientProfileId) {
+      throw new Error('Medication not found');
+    }
+
+    const updated: MedicationRecord = {
+      ...med,
+      reminderTimes,
+      ...(startDate !== undefined ? { startDate } : {}),
+      ...(endDate !== undefined ? { endDate } : {}),
+      updatedAt: new Date(),
+    };
+    this.medications.set(id, updated);
+    return { ...updated };
+  }
+
+  async createDoseLogs(
+    logs: Array<{ medicationId: string; patientProfileId: string; scheduledTime: Date }>
+  ): Promise<DoseLogRecord[]> {
+    const created: DoseLogRecord[] = [];
+    const now = new Date();
+
+    for (const l of logs) {
+      // Check idempotency: unique per medicationId + scheduledTime
+      const existingKey = Array.from(this.doseLogs.values()).find(
+        (existing) =>
+          existing.medicationId === l.medicationId &&
+          existing.scheduledTime.getTime() === l.scheduledTime.getTime()
+      );
+
+      if (existingKey) {
+        created.push({ ...existingKey });
+        continue;
+      }
+
+      const id = crypto.randomUUID();
+      const record: DoseLogRecord = {
+        id,
+        medicationId: l.medicationId,
+        patientProfileId: l.patientProfileId,
+        scheduledTime: l.scheduledTime,
+        status: 'PENDING',
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.doseLogs.set(id, record);
+      created.push({ ...record });
+    }
+
+    return created;
+  }
+
+  async listDoseLogs(patientProfileId: string, from: Date, to: Date): Promise<DoseLogRecord[]> {
+    const list: DoseLogRecord[] = [];
+    for (const dl of this.doseLogs.values()) {
+      if (
+        dl.patientProfileId === patientProfileId &&
+        dl.scheduledTime.getTime() >= from.getTime() &&
+        dl.scheduledTime.getTime() <= to.getTime()
+      ) {
+        list.push({ ...dl });
+      }
+    }
+    return list.sort((a, b) => a.scheduledTime.getTime() - b.scheduledTime.getTime());
+  }
+
+  async getDoseLogById(id: string, patientProfileId: string): Promise<DoseLogRecord | null> {
+    const dl = this.doseLogs.get(id);
+    if (!dl || dl.patientProfileId !== patientProfileId) return null;
+    return { ...dl };
+  }
+
+  async updateDoseAction(
+    id: string,
+    patientProfileId: string,
+    status: DoseStatusType,
+    actionTime: Date,
+    meta?: { snoozeMinutes?: number; notes?: string }
+  ): Promise<DoseLogRecord> {
+    const dl = this.doseLogs.get(id);
+    if (!dl || dl.patientProfileId !== patientProfileId) {
+      throw new Error('Dose log not found');
+    }
+
+    const updated: DoseLogRecord = {
+      ...dl,
+      status,
+      actionTime,
+      snoozeMinutes: meta?.snoozeMinutes,
+      notes: meta?.notes,
+      updatedAt: new Date(),
+    };
+    this.doseLogs.set(id, updated);
+    return { ...updated };
+  }
+
+  async cancelPendingDosesForMedication(
+    medicationId: string,
+    patientProfileId: string,
+    fromDate: Date = new Date()
+  ): Promise<number> {
+    let count = 0;
+    for (const [id, dl] of this.doseLogs.entries()) {
+      if (
+        dl.medicationId === medicationId &&
+        dl.patientProfileId === patientProfileId &&
+        dl.status === 'PENDING' &&
+        dl.scheduledTime.getTime() >= fromDate.getTime()
+      ) {
+        this.doseLogs.delete(id);
+        count++;
+      }
+    }
+    return count;
   }
 }
