@@ -54,6 +54,7 @@ export interface StorageProvider {
   getObjectBuffer(storageKey: string, patientProfileId: string): Promise<Buffer>;
   deleteObject(storageKey: string, patientProfileId: string): Promise<void>;
   checkObjectExists(storageKey: string, patientProfileId: string): Promise<{ exists: boolean; sizeBytes?: number }>;
+  putObject(storageKey: string, patientProfileId: string, buffer: Buffer, mimeType: string): Promise<void>;
 }
 
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'application/pdf']);
@@ -367,6 +368,19 @@ export class S3StorageProvider implements StorageProvider {
 
     await this.s3Client.send(command);
   }
+
+  async putObject(storageKey: string, patientProfileId: string, buffer: Buffer, mimeType: string): Promise<void> {
+    validateStorageKey(storageKey, patientProfileId);
+
+    const command = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: storageKey,
+      Body: buffer,
+      ContentType: mimeType,
+    });
+
+    await this.s3Client.send(command);
+  }
 }
 
 /**
@@ -563,6 +577,23 @@ export class MemoryStorageProvider implements StorageProvider {
   async deleteObject(storageKey: string, patientProfileId: string): Promise<void> {
     validateStorageKey(storageKey, patientProfileId);
     this.objects.delete(storageKey);
+  }
+
+  async putObject(storageKey: string, patientProfileId: string, buffer: Buffer, mimeType: string): Promise<void> {
+    validateStorageKey(storageKey, patientProfileId);
+    const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+    this.objects.set(storageKey, {
+      buffer,
+      metadata: {
+        storageKey,
+        originalFilename: `doc-${storageKey.split('/').pop()}`,
+        mimeType,
+        fileSizeBytes: buffer.length,
+        sha256Checksum: checksum,
+        patientProfileId,
+        uploadedAt: new Date(),
+      },
+    });
   }
 }
 

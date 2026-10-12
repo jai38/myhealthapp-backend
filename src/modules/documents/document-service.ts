@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import {
   StorageProvider,
   UploadIntentResponse,
@@ -80,6 +81,33 @@ export class DocumentService {
       }
       throw createErr;
     }
+  }
+
+  /**
+   * Saves a server-generated document (such as a medical PDF export report)
+   * into private storage and records it in the document repository.
+   */
+  async saveGeneratedDocument(
+    patientProfileId: string,
+    filename: string,
+    mimeType: string,
+    buffer: Buffer,
+    pageCount?: number
+  ): Promise<DocumentRecord> {
+    const storageKey = `documents/${patientProfileId}/${crypto.randomUUID()}`;
+    await this.storageProvider.putObject(storageKey, patientProfileId, buffer, mimeType);
+    const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+
+    return this.docRepository.create({
+      patientProfileId,
+      storageKey,
+      originalFilename: filename,
+      mimeType,
+      fileSizeBytes: buffer.length,
+      sha256Checksum: checksum,
+      status: 'CONFIRMED',
+      pageCount: pageCount !== undefined ? pageCount : undefined,
+    });
   }
 
   /**

@@ -42,6 +42,8 @@ import { TimelineService } from './modules/timeline/timeline-service.js';
 import { createTimelineRouter } from './modules/timeline/routes.js';
 import { MedicationService } from './modules/medications/medication-service.js';
 import { createMedicationRouter } from './modules/medications/routes.js';
+import { ReportService } from './modules/reports/report-service.js';
+import { createReportRouter } from './modules/reports/routes.js';
 
 export interface AppOptions {
   storageProvider?: StorageProvider;
@@ -51,6 +53,7 @@ export interface AppOptions {
   prescriptionService?: PrescriptionService;
   timelineService?: TimelineService;
   medicationService?: MedicationService;
+  reportService?: ReportService;
   docRepo?: DocumentRepository;
   jobRepo?: ExtractionJobRepository;
   prescriptionRepo?: PrescriptionRepository;
@@ -214,6 +217,16 @@ export const createApp = (options?: AppOptions): Express => {
     `${env.API_PREFIX}/medications`,
     authMiddleware,
     createMedicationRouter(medicationService)
+  );
+
+  const reportService =
+    options?.reportService ??
+    new ReportService(timelineRepo, medicationRepo, documentService);
+
+  app.use(
+    `${env.API_PREFIX}/reports`,
+    authMiddleware,
+    createReportRouter(reportService)
   );
 
   app.use(errorHandler);
