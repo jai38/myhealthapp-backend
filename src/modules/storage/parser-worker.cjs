@@ -1,6 +1,9 @@
 const { parentPort } = require('worker_threads');
 const { PDFDocument } = require('pdf-lib');
-const imageSize = require('image-size');
+const imageSizePkg = require('image-size');
+const getImageDimensions = typeof imageSizePkg === 'function'
+  ? imageSizePkg
+  : (imageSizePkg.imageSize || imageSizePkg.default);
 
 if (!parentPort) {
   process.exit(1);
@@ -87,7 +90,7 @@ parentPort.on('message', async (message) => {
 
     if (mimeType === 'image/jpeg' || mimeType === 'image/png') {
       try {
-        const dimensions = imageSize(nodeBuf);
+        const dimensions = getImageDimensions(nodeBuf);
         if (!dimensions || !dimensions.width || !dimensions.height) {
           parentPort.postMessage({
             isValid: false,

@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs = require('fs'), path = require('path'); const src = 'src/modules/storage/parser-worker.cjs', dst = 'dist/modules/storage/parser-worker.cjs'; fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.copyFileSync(src, dst);\"",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

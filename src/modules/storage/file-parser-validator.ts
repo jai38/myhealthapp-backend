@@ -1,7 +1,12 @@
+import fs from 'fs';
 import path from 'path';
 import { Worker } from 'worker_threads';
 import { PDFDocument } from 'pdf-lib';
-import imageSize from 'image-size';
+import imageSizePkg from 'image-size';
+
+const getImageDimensions = typeof imageSizePkg === 'function'
+  ? imageSizePkg
+  : ((imageSizePkg as any).imageSize || (imageSizePkg as any).default);
 
 export interface DocumentValidationResult {
   isValid: boolean;
@@ -17,7 +22,11 @@ export const MAX_PDF_PAGES = 10;
 export const MAX_IMAGE_DIMENSION = 8000;
 export const MIN_IMAGE_DIMENSION = 50;
 
-const WORKER_SCRIPT_PATH = path.resolve(__dirname, 'parser-worker.cjs');
+const WORKER_SCRIPT_PATH = fs.existsSync(path.resolve(__dirname, 'parser-worker.cjs'))
+  ? path.resolve(__dirname, 'parser-worker.cjs')
+  : fs.existsSync(path.resolve(process.cwd(), 'dist/modules/storage/parser-worker.cjs'))
+  ? path.resolve(process.cwd(), 'dist/modules/storage/parser-worker.cjs')
+  : path.resolve(process.cwd(), 'src/modules/storage/parser-worker.cjs');
 
 /**
  * Validates file magic bytes against claimed MIME type.
@@ -158,7 +167,7 @@ async function runDocumentValidationInternal(
 
   if (claimedMimeType === 'image/jpeg' || claimedMimeType === 'image/png') {
     try {
-      const dimensions = imageSize(buffer);
+      const dimensions = getImageDimensions(buffer);
       if (!dimensions || !dimensions.width || !dimensions.height) {
         return {
           isValid: false,
