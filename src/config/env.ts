@@ -8,7 +8,9 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PREFIX: z.string().default('/api/v1'),
   DATABASE_URL: z.string().default('postgresql://healthuser:healthpassword@localhost:5432/myhealthapp_dev?schema=public'),
-  AUTH_PROVIDER: z.enum(['mock', 'supabase', 'node-internal']).default('mock'),
+  AUTH_PROVIDER: z.enum(['mock', 'supabase', 'node-internal']).default(
+    process.env.NODE_ENV === 'production' ? 'node-internal' : 'mock'
+  ),
   JWT_SECRET: z.string().min(16).default('dev-insecure-jwt-secret-replace-in-production-min-32-chars-long'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   CLIENT_URL: z.string().default('http://localhost:8081'),
