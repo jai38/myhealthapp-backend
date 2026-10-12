@@ -1,5 +1,12 @@
 import { ExtractedPrescriptionPayload } from '../../prescriptions/schemas.js';
 
+export interface BenchmarkProvenance {
+  origin: 'SYNTHETIC_CLINICAL_FIXTURE';
+  sourceType: 'SYNTHETIC_GENERATED' | 'SYNTHETIC_DEIDENTIFIED_TEMPLATE';
+  phiStatus: 'ZERO_PHI_SYNTHETIC';
+  permittedUse: 'BENCHMARK_EVALUATION_AND_HARNESS_TESTING_ONLY';
+}
+
 export interface BenchmarkCase {
   id: string;
   category:
@@ -12,6 +19,7 @@ export interface BenchmarkCase {
     | 'MULTIPAGE_DISCHARGE_SUMMARY'
     | 'NEGATIVE_CONTROL';
   description: string;
+  provenance: BenchmarkProvenance;
   syntheticDocumentText: string;
   expectedPayload: ExtractedPrescriptionPayload;
   safetyChecks: {
@@ -21,6 +29,13 @@ export interface BenchmarkCase {
     isNegativeControl?: boolean;
   };
 }
+
+export const DEFAULT_SYNTHETIC_PROVENANCE: BenchmarkProvenance = {
+  origin: 'SYNTHETIC_CLINICAL_FIXTURE',
+  sourceType: 'SYNTHETIC_GENERATED',
+  phiStatus: 'ZERO_PHI_SYNTHETIC',
+  permittedUse: 'BENCHMARK_EVALUATION_AND_HARNESS_TESTING_ONLY',
+};
 
 const sampleDrugs = [
   { name: 'Cifran 500', generic: 'Ciprofloxacin 500mg', form: 'TABLET' as const, dose: '500 mg', freq: '1-0-1' },
@@ -33,7 +48,7 @@ const sampleDrugs = [
   { name: 'Combiflam', generic: 'Ibuprofen + Paracetamol', form: 'TABLET' as const, dose: '400mg/325mg', freq: '1-0-1 pc' },
 ];
 
-export const INDIAN_PRESCRIPTION_BENCHMARK_DATASET: BenchmarkCase[] = [
+const RAW_DATASET = [
   // 1. Common Clinic Slips & Acute Care
   {
     id: 'IN-RX-001',
@@ -623,3 +638,15 @@ export const INDIAN_PRESCRIPTION_BENCHMARK_DATASET: BenchmarkCase[] = [
     };
   }),
 ];
+
+/**
+ * 32-Case Synthetic Indian Prescription Benchmark Dataset.
+ * Provenance: 100% synthetic clinical test fixtures modeled after common Indian clinical handwriting & print formats.
+ * Permitted Use: Offline benchmark harness testing, regression validation, and safety rule scoring ONLY.
+ * Real Patient PHI: None.
+ */
+export const INDIAN_PRESCRIPTION_BENCHMARK_DATASET: BenchmarkCase[] = RAW_DATASET.map((c) => ({
+  ...c,
+  provenance: DEFAULT_SYNTHETIC_PROVENANCE,
+})) as BenchmarkCase[];
+

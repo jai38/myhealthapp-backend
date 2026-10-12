@@ -4,7 +4,11 @@ import helmet from 'helmet';
 import { env } from './config/env.js';
 import { createAuthMiddleware, requireOwnership } from './middleware/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
-import { StorageProvider, MemoryStorageProvider } from './modules/storage/storage-provider.js';
+import {
+  StorageProvider,
+  S3StorageProvider,
+  MemoryStorageProvider,
+} from './modules/storage/storage-provider.js';
 import {
   PrescriptionExtractionProvider,
   MockPrescriptionExtractionProvider,
@@ -12,6 +16,17 @@ import {
 import { DocumentService } from './modules/documents/document-service.js';
 import { ExtractionJobQueue } from './modules/ai-extraction/job-queue.js';
 import { PrescriptionService } from './modules/prescriptions/prescription-service.js';
+import {
+  DocumentRepository,
+  ExtractionJobRepository,
+  PrescriptionRepository,
+  PrismaDocumentRepository,
+  PrismaExtractionJobRepository,
+  PrismaPrescriptionRepository,
+  InMemoryDocumentRepository,
+  InMemoryExtractionJobRepository,
+  InMemoryPrescriptionRepository,
+} from './modules/persistence/repositories.js';
 import { createDocumentRouter } from './modules/documents/routes.js';
 import { createPrescriptionRouter } from './modules/prescriptions/routes.js';
 
@@ -21,6 +36,9 @@ export interface AppOptions {
   documentService?: DocumentService;
   jobQueue?: ExtractionJobQueue;
   prescriptionService?: PrescriptionService;
+  docRepo?: DocumentRepository;
+  jobRepo?: ExtractionJobRepository;
+  prescriptionRepo?: PrescriptionRepository;
 }
 
 export const createApp = (options?: AppOptions): Express => {
@@ -33,7 +51,10 @@ export const createApp = (options?: AppOptions): Express => {
       credentials: true,
     })
   );
-  app.use(express.json({ limit: '20mb' }));
+
+  // Security Rule: Production JSON requests only carry lightweight metadata (intents, review forms).
+  // Heavy binary uploads use direct pre-signed storage URLs, eliminating 15MB+ JSON base64 payloads.
+  app.use(express.json({ limit: '1mb' }));
 
   // Liveness & Readiness probe
   app.get('/healthz', (_req: Request, res: Response) => {
@@ -79,16 +100,41 @@ export const createApp = (options?: AppOptions): Express => {
     }
   );
 
-  // Services initialization (supports injection for deterministic testing)
-  const storageProvider = options?.storageProvider ?? new MemoryStorageProvider();
+  // Repositories initialization (PostgreSQL Prisma default in prod/dev, In-Memory test double in unit test mode)
+  const useInMemoryDb = process.env.NODE_ENV === 'test' && !process.env.TEST_USE_POSTGRES;
+  const docRepo =
+    options?.docRepo ??
+    (useInMemoryDb ? new InMemoryDocumentRepository() : new PrismaDocumentRepository());
+
+  const jobRepo =
+    options?.jobRepo ??
+    (useInMemoryDb ? new InMemoryExtractionJobRepository() : new PrismaExtractionJobRepository());
+
+  const prescriptionRepo =
+    options?.prescriptionRepo ??
+    (useInMemoryDb
+      ? new InMemoryPrescriptionRepository(jobRepo, docRepo)
+      : new PrismaPrescriptionRepository());
+
+  // Storage initialization: S3StorageProvider by default; MemoryStorageProvider only when explicitly configured
+  const useMemoryStorage =
+    options?.storageProvider ||
+    (process.env.STORAGE_PROVIDER === 'memory' || (process.env.NODE_ENV === 'test' && !process.env.TEST_USE_MINIO));
+  const storageProvider =
+    options?.storageProvider ??
+    (useMemoryStorage ? new MemoryStorageProvider() : new S3StorageProvider());
+
   const extractionProvider =
     options?.extractionProvider ?? new MockPrescriptionExtractionProvider();
+
   const documentService =
-    options?.documentService ?? new DocumentService(storageProvider);
+    options?.documentService ?? new DocumentService(storageProvider, docRepo);
+
   const jobQueue =
-    options?.jobQueue ?? new ExtractionJobQueue(extractionProvider, documentService);
+    options?.jobQueue ?? new ExtractionJobQueue(extractionProvider, documentService, jobRepo);
+
   const prescriptionService =
-    options?.prescriptionService ?? new PrescriptionService(documentService, jobQueue);
+    options?.prescriptionService ?? new PrescriptionService(prescriptionRepo);
 
   // Module routers mounted under API_PREFIX
   app.use(

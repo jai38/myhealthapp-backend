@@ -21,6 +21,14 @@ enum ProcessingStatus {
   FAILED
 }
 
+enum JobStatus {
+  QUEUED
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
 enum ReviewStatus {
   DRAFT
   CONFIRMED
@@ -51,7 +59,8 @@ model User {
   createdAt     DateTime      @default(now()) @map("created_at")
   updatedAt     DateTime      @updatedAt @map("updated_at")
 
-  patientProfile PatientProfile?
+  patientProfile         PatientProfile?
+  confirmedPrescriptions Prescription[] @relation("ConfirmedPrescriptions")
 
   @@map("users")
 }
@@ -67,8 +76,13 @@ model PatientProfile {
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
-  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   userPreferences UserPreferences?
+  documents       Document[]
+  uploadIntents   UploadIntent[]
+  extractionJobs  ExtractionJob[]
+  prescriptions   Prescription[]
+  timelineEvents  TimelineEvent[]
 
   @@map("patient_profiles")
 }
@@ -85,4 +99,148 @@ model UserPreferences {
   patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
 
   @@map("user_preferences")
+}
+
+model Document {
+  id               String           @id @default(uuid()) @db.Uuid
+  patientProfileId String           @map("patient_profile_id") @db.Uuid
+  storageKey       String           @unique @map("storage_key")
+  originalFilename String           @map("original_filename")
+  mimeType         String           @map("mime_type")
+  fileSizeBytes    Int              @map("file_size_bytes")
+  sha256Checksum   String           @map("sha256_checksum")
+  status           ProcessingStatus @default(UPLOADED)
+  pageCount        Int?             @map("page_count")
+  imageWidth       Int?             @map("image_width")
+  imageHeight      Int?             @map("image_height")
+  uploadedAt       DateTime         @default(now()) @map("uploaded_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  patientProfile    PatientProfile     @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  extractionJobs    ExtractionJob[]
+  prescriptions     Prescription[]
+  prescriptionItems PrescriptionItem[]
+  timelineEvents    TimelineEvent[]
+
+  @@index([patientProfileId])
+  @@map("documents")
+}
+
+model UploadIntent {
+  id                String   @id @default(uuid()) @db.Uuid
+  storageKey        String   @unique @map("storage_key")
+  patientProfileId  String   @map("patient_profile_id") @db.Uuid
+  originalFilename  String   @map("original_filename")
+  mimeType          String   @map("mime_type")
+  expectedSizeBytes Int      @map("expected_size_bytes")
+  expiresAt         DateTime @map("expires_at")
+  consumed          Boolean  @default(false)
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+
+  @@index([patientProfileId])
+  @@map("upload_intents")
+}
+
+model ExtractionJob {
+  id               String    @id @default(uuid()) @db.Uuid
+  patientProfileId String    @map("patient_profile_id") @db.Uuid
+  documentId       String    @map("document_id") @db.Uuid
+  idempotencyKey   String    @map("idempotency_key")
+  status           JobStatus @default(QUEUED)
+  retryCount       Int       @default(0) @map("retry_count")
+  maxRetries       Int       @default(3) @map("max_retries")
+  providerName     String    @map("provider_name")
+  extractedPayload Json?     @map("extracted_payload")
+  errorMessage     String?   @map("error_message")
+  startedAt        DateTime? @map("started_at")
+  completedAt      DateTime? @map("completed_at")
+  confirmedAt      DateTime? @map("confirmed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  document       Document       @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  prescription   Prescription?
+
+  @@unique([patientProfileId, idempotencyKey])
+  @@index([patientProfileId])
+  @@index([documentId])
+  @@index([status])
+  @@map("extraction_jobs")
+}
+
+model Prescription {
+  id                 String       @id @default(uuid()) @db.Uuid
+  patientProfileId   String       @map("patient_profile_id") @db.Uuid
+  documentId         String       @map("document_id") @db.Uuid
+  jobId              String       @unique @map("job_id") @db.Uuid
+  prescriptionDate   DateTime?    @map("prescription_date") @db.Date
+  dateIsUncertain    Boolean      @default(false) @map("date_is_uncertain")
+  doctorName         String?      @map("doctor_name")
+  clinicHospitalName String?      @map("clinic_hospital_name")
+  diagnosis          String?
+  reviewStatus       ReviewStatus @default(CONFIRMED) @map("review_status")
+  confirmedAt        DateTime     @default(now()) @map("confirmed_at")
+  confirmedByUserId  String       @map("confirmed_by_user_id") @db.Uuid
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @updatedAt @map("updated_at")
+
+  patientProfile  PatientProfile     @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  document        Document           @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  job             ExtractionJob      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  confirmedByUser User               @relation("ConfirmedPrescriptions", fields: [confirmedByUserId], references: [id])
+  items           PrescriptionItem[]
+  timelineEvents  TimelineEvent[]
+
+  @@index([patientProfileId])
+  @@index([documentId])
+  @@map("prescriptions")
+}
+
+model PrescriptionItem {
+  id                     String   @id @default(uuid()) @db.Uuid
+  prescriptionId         String   @map("prescription_id") @db.Uuid
+  nameAsWritten          String   @map("name_as_written")
+  normalizedMedicineName String?  @map("normalized_medicine_name")
+  strength               String?
+  dosageForm             String   @map("dosage_form")
+  frequencyText          String?  @map("frequency_text")
+  durationText           String?  @map("duration_text")
+  route                  String   @default("ORAL")
+  instructions           String?
+  isActiveMedication     Boolean  @default(false) @map("is_active_medication")
+  sourceDocumentId       String   @map("source_document_id") @db.Uuid
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  sourceDocument Document     @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+
+  @@index([prescriptionId])
+  @@index([sourceDocumentId])
+  @@map("prescription_items")
+}
+
+model TimelineEvent {
+  id                   String   @id @default(uuid()) @db.Uuid
+  patientProfileId     String   @map("patient_profile_id") @db.Uuid
+  eventType            String   @default("PRESCRIPTION_RECORDED") @map("event_type")
+  eventDate            DateTime @map("event_date") @db.Date
+  title                String
+  summary              String
+  sourceDocumentId     String   @map("source_document_id") @db.Uuid
+  sourcePrescriptionId String?  @map("source_prescription_id") @db.Uuid
+  isVerified           Boolean  @default(true) @map("is_verified")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  patientProfile     PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
+  sourceDocument     Document       @relation(fields: [sourceDocumentId], references: [id], onDelete: Cascade)
+  sourcePrescription Prescription?  @relation(fields: [sourcePrescriptionId], references: [id], onDelete: SetNull)
+
+  @@index([patientProfileId])
+  @@index([eventDate])
+  @@map("timeline_events")
 }

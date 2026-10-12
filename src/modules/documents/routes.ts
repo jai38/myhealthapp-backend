@@ -15,7 +15,7 @@ export function createDocumentRouter(documentService: DocumentService): Router {
       const { filename, mimeType, fileSizeBytes } = req.body;
       if (!filename || !mimeType || typeof fileSizeBytes !== 'number') {
         res.status(400).json({
-          error: { code: 'BAD_REQUEST', message: 'Missing required upload parameters' },
+          error: { code: 'BAD_REQUEST', message: 'Missing required upload parameters: filename, mimeType, and numeric fileSizeBytes' },
         });
         return;
       }
@@ -32,7 +32,7 @@ export function createDocumentRouter(documentService: DocumentService): Router {
       return;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Upload initialization failed';
-      if (msg.includes('Unsupported MIME type') || msg.includes('exceeds')) {
+      if (msg.includes('Unsupported MIME type') || msg.includes('exceeds') || msg.includes('greater than 0')) {
         res.status(400).json({ error: { code: 'BAD_REQUEST', message: msg } });
         return;
       }
@@ -42,9 +42,12 @@ export function createDocumentRouter(documentService: DocumentService): Router {
   });
 
   // POST /confirm-upload
+  // Production genuine pre-signed upload confirmation.
+  // The client uploads bytes to the private storage URL directly, then calls this endpoint.
+  // Missing uploaded bytes or absent storage object fails closed.
   router.post('/confirm-upload', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { storageKey, fileBufferBase64, clientChecksum } = req.body;
+      const { storageKey, mimeType, clientChecksum } = req.body;
       if (!storageKey) {
         res.status(400).json({
           error: { code: 'BAD_REQUEST', message: 'storageKey is required' },
@@ -53,15 +56,11 @@ export function createDocumentRouter(documentService: DocumentService): Router {
       }
 
       const patientProfileId = req.authContext!.patientProfileId;
-      // Default to small valid PDF magic bytes if buffer is not provided
-      const buffer = fileBufferBase64
-        ? Buffer.from(fileBufferBase64, 'base64')
-        : Buffer.from('%PDF-1.4 sample content', 'utf-8');
 
       const record = await documentService.confirmUpload(
         patientProfileId,
         storageKey,
-        buffer,
+        mimeType,
         clientChecksum
       );
 
@@ -76,8 +75,12 @@ export function createDocumentRouter(documentService: DocumentService): Router {
       if (
         msg.includes('Integrity check failed') ||
         msg.includes('File signature') ||
-        msg.includes('exceeds') ||
-        msg.includes('expired')
+        msg.includes('Document validation failed') ||
+        msg.includes('Uploaded object not found') ||
+        msg.includes('empty (0 bytes)') ||
+        msg.includes('expired') ||
+        msg.includes('not found') ||
+        msg.includes('exceeds')
       ) {
         res.status(400).json({ error: { code: 'BAD_REQUEST', message: msg } });
         return;
@@ -102,7 +105,7 @@ export function createDocumentRouter(documentService: DocumentService): Router {
       return;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '';
-      if (msg.includes('Document not found') || msg.includes('Unauthorized')) {
+      if (msg.includes('Document not found') || msg.includes('Unauthorized') || msg.includes('Forbidden')) {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Document not found' } });
         return;
       }
