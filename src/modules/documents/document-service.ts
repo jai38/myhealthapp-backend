@@ -57,20 +57,29 @@ export class DocumentService {
     );
 
     // 2. Persist in authoritative database repository
-    const record = await this.docRepository.create({
-      patientProfileId,
-      storageKey: metadata.storageKey,
-      originalFilename: metadata.originalFilename,
-      mimeType: metadata.mimeType,
-      fileSizeBytes: metadata.fileSizeBytes,
-      sha256Checksum: metadata.sha256Checksum,
-      status: 'UPLOADED',
-      pageCount: metadata.validationDetails?.pageCount,
-      imageWidth: metadata.validationDetails?.imageDimensions?.width,
-      imageHeight: metadata.validationDetails?.imageDimensions?.height,
-    });
+    try {
+      const record = await this.docRepository.create({
+        patientProfileId,
+        storageKey: metadata.storageKey,
+        originalFilename: metadata.originalFilename,
+        mimeType: metadata.mimeType,
+        fileSizeBytes: metadata.fileSizeBytes,
+        sha256Checksum: metadata.sha256Checksum,
+        status: 'UPLOADED',
+        pageCount: metadata.validationDetails?.pageCount,
+        imageWidth: metadata.validationDetails?.imageDimensions?.width,
+        imageHeight: metadata.validationDetails?.imageDimensions?.height,
+      });
 
-    return record;
+      return record;
+    } catch (createErr) {
+      // If a concurrent request created the document in the database, return it
+      const concurrent = await this.docRepository.findByStorageKey(storageKey);
+      if (concurrent) {
+        return concurrent;
+      }
+      throw createErr;
+    }
   }
 
   /**

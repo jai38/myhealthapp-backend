@@ -130,6 +130,8 @@ export interface ConfirmedPrescriptionResult {
   timelineEvent: TimelineEventRecord;
 }
 
+export type UploadIntentStatus = 'PENDING' | 'VERIFYING' | 'VERIFIED' | 'REJECTED';
+
 export interface UploadIntentRecord {
   id: string;
   patientProfileId: string;
@@ -139,7 +141,11 @@ export interface UploadIntentRecord {
   declaredSizeBytes: number;
   expiresAt: Date;
   consumed: boolean;
+  status: UploadIntentStatus;
+  rejectionReason?: string;
+  verifyingStartedAt?: Date;
   createdAt: Date;
+  updatedAt?: Date;
 }
 
 export interface CreateUploadIntentInput {
@@ -151,9 +157,20 @@ export interface CreateUploadIntentInput {
   expiresAt: Date;
 }
 
+export interface AcquireLockResult {
+  success: boolean;
+  intent?: UploadIntentRecord;
+  reason?: string;
+  retryable?: boolean;
+}
+
 export interface UploadIntentRepository {
   createIntent(input: CreateUploadIntentInput): Promise<UploadIntentRecord>;
   getIntent(storageKey: string): Promise<UploadIntentRecord | null>;
+  acquireVerificationLock(storageKey: string, patientProfileId: string, leaseTimeoutMs?: number): Promise<AcquireLockResult>;
+  releaseVerificationLock(storageKey: string, patientProfileId: string): Promise<void>;
+  markVerified(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord>;
+  markRejected(storageKey: string, patientProfileId: string, reason: string): Promise<UploadIntentRecord>;
   consumeIntent(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord | null>;
 }
 
@@ -210,6 +227,7 @@ export class PrismaUploadIntentRepository implements UploadIntentRepository {
         expectedSizeBytes: input.declaredSizeBytes,
         expiresAt: input.expiresAt,
         consumed: false,
+        status: 'PENDING',
       },
     });
 
@@ -222,7 +240,11 @@ export class PrismaUploadIntentRepository implements UploadIntentRepository {
       declaredSizeBytes: record.expectedSizeBytes,
       expiresAt: record.expiresAt,
       consumed: record.consumed,
+      status: (record.status as UploadIntentStatus) || 'PENDING',
+      rejectionReason: record.rejectionReason ?? undefined,
+      verifyingStartedAt: record.verifyingStartedAt ?? undefined,
       createdAt: record.createdAt,
+      updatedAt: record.updatedAt ?? undefined,
     };
   }
 
@@ -240,52 +262,192 @@ export class PrismaUploadIntentRepository implements UploadIntentRepository {
       declaredSizeBytes: record.expectedSizeBytes,
       expiresAt: record.expiresAt,
       consumed: record.consumed,
+      status: (record.status as UploadIntentStatus) || 'PENDING',
+      rejectionReason: record.rejectionReason ?? undefined,
+      verifyingStartedAt: record.verifyingStartedAt ?? undefined,
       createdAt: record.createdAt,
+      updatedAt: record.updatedAt ?? undefined,
     };
   }
 
-  async consumeIntent(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord | null> {
+  async acquireVerificationLock(
+    storageKey: string,
+    patientProfileId: string,
+    leaseTimeoutMs = 30000
+  ): Promise<AcquireLockResult> {
     const now = new Date();
+    const leaseCutoff = new Date(now.getTime() - leaseTimeoutMs);
+
     return this.prisma.$transaction(async (tx) => {
-      const existing = await tx.uploadIntent.findFirst({
-        where: {
-          storageKey,
-          patientProfileId,
-          consumed: false,
-          expiresAt: { gt: now },
-        },
+      const existing = await tx.uploadIntent.findUnique({
+        where: { storageKey },
       });
 
       if (!existing) {
-        return null;
+        return { success: false, reason: 'Upload intent not found. Please initialize a new upload.', retryable: false };
       }
 
+      if (existing.patientProfileId !== patientProfileId) {
+        return { success: false, reason: 'Forbidden: Upload intent does not belong to the authenticated patient', retryable: false };
+      }
+
+      if (existing.status === 'VERIFIED') {
+        return { success: false, reason: 'Upload intent has already been consumed. Duplicate confirmation rejected.', retryable: false };
+      }
+
+      if (existing.status === 'REJECTED') {
+        return { success: false, reason: `Upload intent was rejected: ${existing.rejectionReason || 'Invalid upload'}`, retryable: false };
+      }
+
+      if (now > existing.expiresAt) {
+        return { success: false, reason: 'Upload ticket has expired (exceeded 15-minute window)', retryable: false };
+      }
+
+      if (existing.status === 'VERIFYING' && existing.verifyingStartedAt && existing.verifyingStartedAt > leaseCutoff) {
+        return { success: false, reason: 'Upload verification is currently in progress. Please wait.', retryable: true };
+      }
+
+      // Atomically transition to VERIFYING
       const updateResult = await tx.uploadIntent.updateMany({
         where: {
           id: existing.id,
-          consumed: false,
+          OR: [
+            { status: 'PENDING' },
+            {
+              status: 'VERIFYING',
+              OR: [
+                { verifyingStartedAt: null },
+                { verifyingStartedAt: { lte: leaseCutoff } },
+              ],
+            },
+          ],
         },
         data: {
-          consumed: true,
+          status: 'VERIFYING',
+          verifyingStartedAt: now,
+          updatedAt: now,
         },
       });
 
       if (updateResult.count === 0) {
-        return null;
+        return { success: false, reason: 'Upload verification is currently in progress. Please wait.', retryable: true };
       }
 
+      const updated = await tx.uploadIntent.findUniqueOrThrow({ where: { id: existing.id } });
       return {
-        id: existing.id,
-        patientProfileId: existing.patientProfileId,
-        storageKey: existing.storageKey,
-        originalFilename: existing.originalFilename,
-        mimeType: existing.mimeType,
-        declaredSizeBytes: existing.expectedSizeBytes,
-        expiresAt: existing.expiresAt,
-        consumed: true,
-        createdAt: existing.createdAt,
+        success: true,
+        intent: {
+          id: updated.id,
+          patientProfileId: updated.patientProfileId,
+          storageKey: updated.storageKey,
+          originalFilename: updated.originalFilename,
+          mimeType: updated.mimeType,
+          declaredSizeBytes: updated.expectedSizeBytes,
+          expiresAt: updated.expiresAt,
+          consumed: updated.consumed,
+          status: (updated.status as UploadIntentStatus) || 'VERIFYING',
+          rejectionReason: updated.rejectionReason ?? undefined,
+          verifyingStartedAt: updated.verifyingStartedAt ?? undefined,
+          createdAt: updated.createdAt,
+          updatedAt: updated.updatedAt,
+        },
       };
     });
+  }
+
+  async releaseVerificationLock(storageKey: string, patientProfileId: string): Promise<void> {
+    const now = new Date();
+    await this.prisma.uploadIntent.updateMany({
+      where: {
+        storageKey,
+        patientProfileId,
+        status: 'VERIFYING',
+      },
+      data: {
+        status: 'PENDING',
+        verifyingStartedAt: null,
+        updatedAt: now,
+      },
+    });
+  }
+
+  async markVerified(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord> {
+    const now = new Date();
+    const updateResult = await this.prisma.uploadIntent.updateMany({
+      where: { storageKey, patientProfileId },
+      data: {
+        status: 'VERIFIED',
+        consumed: true,
+        verifyingStartedAt: null,
+        updatedAt: now,
+      },
+    });
+
+    if (updateResult.count === 0) {
+      throw new Error('Upload intent not found or patient profile mismatch');
+    }
+
+    const updated = await this.prisma.uploadIntent.findUniqueOrThrow({ where: { storageKey } });
+
+    return {
+      id: updated.id,
+      patientProfileId: updated.patientProfileId,
+      storageKey: updated.storageKey,
+      originalFilename: updated.originalFilename,
+      mimeType: updated.mimeType,
+      declaredSizeBytes: updated.expectedSizeBytes,
+      expiresAt: updated.expiresAt,
+      consumed: updated.consumed,
+      status: 'VERIFIED',
+      rejectionReason: updated.rejectionReason ?? undefined,
+      verifyingStartedAt: undefined,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    };
+  }
+
+  async markRejected(storageKey: string, patientProfileId: string, reason: string): Promise<UploadIntentRecord> {
+    const now = new Date();
+    const updateResult = await this.prisma.uploadIntent.updateMany({
+      where: { storageKey, patientProfileId },
+      data: {
+        status: 'REJECTED',
+        consumed: false,
+        rejectionReason: reason,
+        verifyingStartedAt: null,
+        updatedAt: now,
+      },
+    });
+
+    if (updateResult.count === 0) {
+      throw new Error('Upload intent not found or patient profile mismatch');
+    }
+
+    const updated = await this.prisma.uploadIntent.findUniqueOrThrow({ where: { storageKey } });
+
+    return {
+      id: updated.id,
+      patientProfileId: updated.patientProfileId,
+      storageKey: updated.storageKey,
+      originalFilename: updated.originalFilename,
+      mimeType: updated.mimeType,
+      declaredSizeBytes: updated.expectedSizeBytes,
+      expiresAt: updated.expiresAt,
+      consumed: updated.consumed,
+      status: 'REJECTED',
+      rejectionReason: reason,
+      verifyingStartedAt: undefined,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    };
+  }
+
+  async consumeIntent(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord | null> {
+    const lock = await this.acquireVerificationLock(storageKey, patientProfileId);
+    if (!lock.success || !lock.intent) {
+      return null;
+    }
+    return this.markVerified(storageKey, patientProfileId);
   }
 }
 
@@ -833,7 +995,9 @@ export class InMemoryUploadIntentRepository implements UploadIntentRepository {
       declaredSizeBytes: input.declaredSizeBytes,
       expiresAt: input.expiresAt,
       consumed: false,
+      status: 'PENDING',
       createdAt: new Date(),
+      updatedAt: new Date(),
     };
     this.intents.set(input.storageKey, record);
     return { ...record };
@@ -844,15 +1008,81 @@ export class InMemoryUploadIntentRepository implements UploadIntentRepository {
     return record ? { ...record } : null;
   }
 
-  async consumeIntent(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord | null> {
+  async acquireVerificationLock(
+    storageKey: string,
+    patientProfileId: string,
+    leaseTimeoutMs = 30000
+  ): Promise<AcquireLockResult> {
     const intent = this.intents.get(storageKey);
-    if (!intent) return null;
-    if (intent.patientProfileId !== patientProfileId) return null;
-    if (intent.consumed) return null;
-    if (new Date() > intent.expiresAt) return null;
+    if (!intent) {
+      return { success: false, reason: 'Upload intent not found. Please initialize a new upload.', retryable: false };
+    }
+    if (intent.patientProfileId !== patientProfileId) {
+      return { success: false, reason: 'Forbidden: Upload intent does not belong to the authenticated patient', retryable: false };
+    }
+    if (intent.status === 'VERIFIED') {
+      return { success: false, reason: 'Upload intent has already been consumed. Duplicate confirmation rejected.', retryable: false };
+    }
+    if (intent.status === 'REJECTED') {
+      return { success: false, reason: `Upload intent was rejected: ${intent.rejectionReason || 'Invalid upload'}`, retryable: false };
+    }
+    const now = new Date();
+    if (now > intent.expiresAt) {
+      return { success: false, reason: 'Upload ticket has expired (exceeded 15-minute window)', retryable: false };
+    }
+    const leaseCutoff = new Date(now.getTime() - leaseTimeoutMs);
+    if (intent.status === 'VERIFYING' && intent.verifyingStartedAt && intent.verifyingStartedAt > leaseCutoff) {
+      return { success: false, reason: 'Upload verification is currently in progress. Please wait.', retryable: true };
+    }
 
+    intent.status = 'VERIFYING';
+    intent.verifyingStartedAt = now;
+    intent.updatedAt = now;
+    this.intents.set(storageKey, intent);
+    return { success: true, intent: { ...intent } };
+  }
+
+  async releaseVerificationLock(storageKey: string, patientProfileId: string): Promise<void> {
+    const intent = this.intents.get(storageKey);
+    if (intent && intent.patientProfileId === patientProfileId && intent.status === 'VERIFYING') {
+      intent.status = 'PENDING';
+      intent.verifyingStartedAt = undefined;
+      intent.updatedAt = new Date();
+      this.intents.set(storageKey, intent);
+    }
+  }
+
+  async markVerified(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord> {
+    const intent = this.intents.get(storageKey);
+    if (!intent || intent.patientProfileId !== patientProfileId) {
+      throw new Error('Upload intent not found');
+    }
+    intent.status = 'VERIFIED';
     intent.consumed = true;
+    intent.verifyingStartedAt = undefined;
+    intent.updatedAt = new Date();
+    this.intents.set(storageKey, intent);
     return { ...intent };
+  }
+
+  async markRejected(storageKey: string, patientProfileId: string, reason: string): Promise<UploadIntentRecord> {
+    const intent = this.intents.get(storageKey);
+    if (!intent || intent.patientProfileId !== patientProfileId) {
+      throw new Error('Upload intent not found');
+    }
+    intent.status = 'REJECTED';
+    intent.consumed = false;
+    intent.rejectionReason = reason;
+    intent.verifyingStartedAt = undefined;
+    intent.updatedAt = new Date();
+    this.intents.set(storageKey, intent);
+    return { ...intent };
+  }
+
+  async consumeIntent(storageKey: string, patientProfileId: string): Promise<UploadIntentRecord | null> {
+    const lock = await this.acquireVerificationLock(storageKey, patientProfileId);
+    if (!lock.success || !lock.intent) return null;
+    return this.markVerified(storageKey, patientProfileId);
   }
 }
 

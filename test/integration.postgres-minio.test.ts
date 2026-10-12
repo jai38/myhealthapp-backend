@@ -59,7 +59,8 @@ describe.skipIf(!isPostgresAvailable || !isMinioAvailable)(
     const testPatientProfileId = crypto.randomUUID();
     const testDocumentId = crypto.randomUUID();
     const testJobId = crypto.randomUUID();
-    const testStorageKey = `documents/${testPatientProfileId}/integ-${testRunId}.pdf`;
+    const testKeyUuid = crypto.randomUUID();
+    const testStorageKey = `documents/${testPatientProfileId}/${testKeyUuid}`;
 
     beforeAll(async () => {
       prisma = getPrismaClient();
@@ -298,7 +299,8 @@ describe.skipIf(!isPostgresAvailable || !isMinioAvailable)(
     it('races concurrent confirmations and verifies exactly one confirmed prescription and one timeline event', async () => {
       const raceDocId = crypto.randomUUID();
       const raceJobId = crypto.randomUUID();
-      const raceStorageKey = `documents/${testPatientProfileId}/race-${testRunId}.pdf`;
+      const raceKeyUuid = crypto.randomUUID();
+      const raceStorageKey = `documents/${testPatientProfileId}/${raceKeyUuid}`;
 
       await docRepo.create({
         id: raceDocId,

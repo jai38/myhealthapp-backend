@@ -198,83 +198,112 @@ export class S3StorageProvider implements StorageProvider {
   ): Promise<StorageObjectMetadata> {
     validateStorageKey(storageKey, patientProfileId);
 
-    // Atomically consume intent
-    const intent = await this.uploadIntentRepo.consumeIntent(storageKey, patientProfileId);
-    if (!intent) {
-      const existing = await this.uploadIntentRepo.getIntent(storageKey);
-      if (!existing) {
-        throw new Error('Upload intent expired or not found. Please initialize a new upload.');
-      }
-      if (existing.patientProfileId !== patientProfileId) {
-        throw new Error('Forbidden: Upload intent does not belong to the authenticated patient');
-      }
-      if (existing.consumed) {
-        throw new Error('Upload intent has already been consumed. Duplicate confirmation rejected.');
-      }
-      if (new Date() > existing.expiresAt) {
-        throw new Error('Upload ticket has expired (exceeded 15-minute window)');
-      }
-      throw new Error('Upload intent is invalid or could not be consumed');
+    // Concurrency-safe lock acquisition
+    const lockResult = await this.uploadIntentRepo.acquireVerificationLock(storageKey, patientProfileId);
+    if (!lockResult.success) {
+      const reason = lockResult.reason || 'Upload intent is invalid or could not be verified';
+      throw new Error(reason);
     }
 
-    if (claimedMimeType && claimedMimeType !== intent.mimeType) {
-      throw new Error(`Claimed MIME type ${claimedMimeType} does not match intent MIME type ${intent.mimeType}`);
-    }
+    const intent = lockResult.intent!;
 
-    // 1. Inspect stored object via HeadObject before downloading bytes
-    let headResponse;
     try {
-      const headCommand = new HeadObjectCommand({
-        Bucket: this.bucket,
-        Key: storageKey,
-      });
-      headResponse = await this.s3Client.send(headCommand);
-    } catch {
-      throw new Error('Uploaded object not found in private storage. Client must upload bytes before confirming.');
+      if (claimedMimeType && claimedMimeType !== intent.mimeType) {
+        await this.uploadIntentRepo.markRejected(
+          storageKey,
+          patientProfileId,
+          `Claimed MIME type ${claimedMimeType} does not match intent MIME type ${intent.mimeType}`
+        );
+        throw new Error(`Claimed MIME type ${claimedMimeType} does not match intent MIME type ${intent.mimeType}`);
+      }
+
+      // 1. Inspect stored object via HeadObject before downloading bytes
+      let headResponse;
+      try {
+        const headCommand = new HeadObjectCommand({
+          Bucket: this.bucket,
+          Key: storageKey,
+        });
+        headResponse = await this.s3Client.send(headCommand);
+      } catch {
+        // Object not yet uploaded or transient S3 error: release lock back to PENDING for retry!
+        await this.uploadIntentRepo.releaseVerificationLock(storageKey, patientProfileId);
+        throw new Error('Uploaded object not found in private storage. Client must upload bytes before confirming.');
+      }
+
+      const actualSizeBytes = headResponse.ContentLength;
+      if (actualSizeBytes == null || actualSizeBytes === 0) {
+        await this.uploadIntentRepo.markRejected(storageKey, patientProfileId, 'Uploaded object is empty (0 bytes)');
+        throw new Error('Uploaded object is empty (0 bytes). Upload must fail closed.');
+      }
+
+      if (actualSizeBytes > MAX_FILE_SIZE_BYTES) {
+        await this.uploadIntentRepo.markRejected(storageKey, patientProfileId, `File size ${actualSizeBytes} bytes exceeds 15MB limit`);
+        throw new Error(`File size ${actualSizeBytes} bytes exceeds 15MB limit`);
+      }
+
+      // Compare actual stored object size with declared size in intent
+      if (intent.declaredSizeBytes !== actualSizeBytes) {
+        await this.uploadIntentRepo.markRejected(
+          storageKey,
+          patientProfileId,
+          `Declared size ${intent.declaredSizeBytes} bytes != actual ${actualSizeBytes} bytes`
+        );
+        throw new Error(
+          `File size mismatch: Declared size ${intent.declaredSizeBytes} bytes does not match actual stored object size ${actualSizeBytes} bytes.`
+        );
+      }
+
+      // 2. Stream object safely with bounded byte limit
+      let fileBuffer: Buffer;
+      try {
+        fileBuffer = await this.getObjectBuffer(storageKey, patientProfileId);
+      } catch (err) {
+        // Object stream read failure is transient: release lock for retry
+        await this.uploadIntentRepo.releaseVerificationLock(storageKey, patientProfileId);
+        throw err;
+      }
+
+      // 3. Perform deep parser-based validation (PDF structure, encryption, image dimensions)
+      const validation = await validateDocumentContent(fileBuffer, intent.mimeType);
+      if (!validation.isValid) {
+        await this.uploadIntentRepo.markRejected(
+          storageKey,
+          patientProfileId,
+          validation.error || 'Document validation failed'
+        );
+        throw new Error(`Document validation failed: ${validation.error}`);
+      }
+
+      // 4. Server-side SHA-256 calculation
+      const serverChecksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+      if (expectedChecksum && expectedChecksum.toLowerCase() !== serverChecksum.toLowerCase()) {
+        await this.uploadIntentRepo.markRejected(storageKey, patientProfileId, 'SHA-256 checksum mismatch');
+        throw new Error('Integrity check failed: Client checksum does not match server-calculated SHA-256');
+      }
+
+      // Atomically mark VERIFIED
+      await this.uploadIntentRepo.markVerified(storageKey, patientProfileId);
+
+      return {
+        storageKey,
+        originalFilename: intent.originalFilename || `prescription-${storageKey.split('/').pop()}`,
+        mimeType: intent.mimeType,
+        fileSizeBytes: fileBuffer.length,
+        sha256Checksum: serverChecksum,
+        patientProfileId: intent.patientProfileId,
+        uploadedAt: new Date(),
+        validationDetails: validation,
+      };
+    } catch (err) {
+      // If error occurred and lock is still in VERIFYING, release lock for clean retry
+      const current = await this.uploadIntentRepo.getIntent(storageKey);
+      if (current && current.status === 'VERIFYING') {
+        await this.uploadIntentRepo.releaseVerificationLock(storageKey, patientProfileId).catch(() => {});
+      }
+      throw err;
     }
-
-    const actualSizeBytes = headResponse.ContentLength;
-    if (actualSizeBytes == null || actualSizeBytes === 0) {
-      throw new Error('Uploaded object is empty (0 bytes). Upload must fail closed.');
-    }
-
-    if (actualSizeBytes > MAX_FILE_SIZE_BYTES) {
-      throw new Error(`File size ${actualSizeBytes} bytes exceeds 15MB limit`);
-    }
-
-    // Compare actual stored object size with declared size in intent
-    if (intent.declaredSizeBytes !== actualSizeBytes) {
-      throw new Error(
-        `File size mismatch: Declared size ${intent.declaredSizeBytes} bytes does not match actual stored object size ${actualSizeBytes} bytes.`
-      );
-    }
-
-    // 2. Stream object safely with bounded byte limit
-    const fileBuffer = await this.getObjectBuffer(storageKey, patientProfileId);
-
-    // 3. Perform deep parser-based validation (PDF structure, encryption, image dimensions)
-    const validation = await validateDocumentContent(fileBuffer, intent.mimeType);
-    if (!validation.isValid) {
-      throw new Error(`Document validation failed: ${validation.error}`);
-    }
-
-    // 4. Server-side SHA-256 calculation
-    const serverChecksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-
-    if (expectedChecksum && expectedChecksum.toLowerCase() !== serverChecksum.toLowerCase()) {
-      throw new Error('Integrity check failed: Client checksum does not match server-calculated SHA-256');
-    }
-
-    return {
-      storageKey,
-      originalFilename: intent.originalFilename || `prescription-${storageKey.split('/').pop()}`,
-      mimeType: intent.mimeType,
-      fileSizeBytes: fileBuffer.length,
-      sha256Checksum: serverChecksum,
-      patientProfileId: intent.patientProfileId,
-      uploadedAt: new Date(),
-      validationDetails: validation,
-    };
   }
 
   async getDownloadSignedUrl(storageKey: string, patientProfileId: string): Promise<string> {
@@ -416,71 +445,90 @@ export class MemoryStorageProvider implements StorageProvider {
   ): Promise<StorageObjectMetadata> {
     validateStorageKey(storageKey, patientProfileId);
 
-    const intent = await this.uploadIntentRepo.consumeIntent(storageKey, patientProfileId);
-    if (!intent) {
-      const existing = await this.uploadIntentRepo.getIntent(storageKey);
-      if (!existing) {
-        throw new Error('Upload intent expired or not found. Please initialize a new upload.');
+    const lockResult = await this.uploadIntentRepo.acquireVerificationLock(storageKey, patientProfileId);
+    if (!lockResult.success) {
+      const reason = lockResult.reason || 'Upload intent is invalid or could not be verified';
+      throw new Error(reason);
+    }
+
+    const intent = lockResult.intent!;
+
+    try {
+      if (claimedMimeType && claimedMimeType !== intent.mimeType) {
+        await this.uploadIntentRepo.markRejected(
+          storageKey,
+          patientProfileId,
+          `Claimed MIME type ${claimedMimeType} does not match intent MIME type ${intent.mimeType}`
+        );
+        throw new Error(`Claimed MIME type ${claimedMimeType} does not match intent MIME type ${intent.mimeType}`);
       }
-      if (existing.patientProfileId !== patientProfileId) {
-        throw new Error('Forbidden: Upload intent does not belong to the authenticated patient');
+
+      const stored = this.objects.get(storageKey);
+      if (!stored || !stored.buffer || stored.buffer.length === 0) {
+        // Not yet uploaded: release lock back to PENDING for retry!
+        await this.uploadIntentRepo.releaseVerificationLock(storageKey, patientProfileId);
+        throw new Error('Uploaded object not found in private storage. Client must upload bytes before confirming.');
       }
-      if (existing.consumed) {
-        throw new Error('Upload intent has already been consumed. Duplicate confirmation rejected.');
+
+      const fileBuffer = stored.buffer;
+      if (fileBuffer.length > MAX_FILE_SIZE_BYTES) {
+        await this.uploadIntentRepo.markRejected(storageKey, patientProfileId, 'File exceeds maximum allowable size of 15MB');
+        throw new Error('File exceeds maximum allowable size of 15MB');
       }
-      if (new Date() > existing.expiresAt) {
-        throw new Error('Upload ticket has expired (exceeded 15-minute window)');
+
+      // Compare actual stored object size with declared size in intent
+      if (intent.declaredSizeBytes !== fileBuffer.length) {
+        await this.uploadIntentRepo.markRejected(
+          storageKey,
+          patientProfileId,
+          `File size mismatch: Declared size ${intent.declaredSizeBytes} bytes does not match actual stored object size ${fileBuffer.length} bytes.`
+        );
+        throw new Error(
+          `File size mismatch: Declared size ${intent.declaredSizeBytes} bytes does not match actual stored object size ${fileBuffer.length} bytes.`
+        );
       }
-      throw new Error('Upload intent is invalid or could not be consumed');
+
+      // Parser-based validation
+      const validation = await validateDocumentContent(fileBuffer, intent.mimeType);
+      if (!validation.isValid) {
+        await this.uploadIntentRepo.markRejected(
+          storageKey,
+          patientProfileId,
+          validation.error || 'Document validation failed'
+        );
+        throw new Error(`Document validation failed: ${validation.error}`);
+      }
+
+      // Server-side SHA-256 calculation
+      const serverChecksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+
+      if (expectedChecksum && expectedChecksum.toLowerCase() !== serverChecksum.toLowerCase()) {
+        await this.uploadIntentRepo.markRejected(storageKey, patientProfileId, 'SHA-256 checksum mismatch');
+        throw new Error('Integrity check failed: Client checksum does not match server-calculated SHA-256');
+      }
+
+      await this.uploadIntentRepo.markVerified(storageKey, patientProfileId);
+
+      const metadata: StorageObjectMetadata = {
+        storageKey,
+        originalFilename: intent.originalFilename || `prescription-${storageKey.split('/').pop()}`,
+        mimeType: intent.mimeType,
+        fileSizeBytes: fileBuffer.length,
+        sha256Checksum: serverChecksum,
+        patientProfileId: intent.patientProfileId,
+        uploadedAt: new Date(),
+        validationDetails: validation,
+      };
+
+      this.objects.set(storageKey, { buffer: fileBuffer, metadata });
+      return metadata;
+    } catch (err) {
+      const current = await this.uploadIntentRepo.getIntent(storageKey);
+      if (current && current.status === 'VERIFYING') {
+        await this.uploadIntentRepo.releaseVerificationLock(storageKey, patientProfileId).catch(() => {});
+      }
+      throw err;
     }
-
-    if (claimedMimeType && claimedMimeType !== intent.mimeType) {
-      throw new Error(`Claimed MIME type ${claimedMimeType} does not match intent MIME type ${intent.mimeType}`);
-    }
-
-    const stored = this.objects.get(storageKey);
-    if (!stored || !stored.buffer || stored.buffer.length === 0) {
-      throw new Error('Uploaded object not found in private storage. Client must upload bytes before confirming.');
-    }
-
-    const fileBuffer = stored.buffer;
-    if (fileBuffer.length > MAX_FILE_SIZE_BYTES) {
-      throw new Error('File exceeds maximum allowable size of 15MB');
-    }
-
-    // Compare actual stored object size with declared size in intent
-    if (intent.declaredSizeBytes !== fileBuffer.length) {
-      throw new Error(
-        `File size mismatch: Declared size ${intent.declaredSizeBytes} bytes does not match actual stored object size ${fileBuffer.length} bytes.`
-      );
-    }
-
-    // Parser-based validation
-    const validation = await validateDocumentContent(fileBuffer, intent.mimeType);
-    if (!validation.isValid) {
-      throw new Error(`Document validation failed: ${validation.error}`);
-    }
-
-    // Server-side SHA-256 calculation
-    const serverChecksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-
-    if (expectedChecksum && expectedChecksum.toLowerCase() !== serverChecksum.toLowerCase()) {
-      throw new Error('Integrity check failed: Client checksum does not match server-calculated SHA-256');
-    }
-
-    const metadata: StorageObjectMetadata = {
-      storageKey,
-      originalFilename: intent.originalFilename || `prescription-${storageKey.split('/').pop()}`,
-      mimeType: intent.mimeType,
-      fileSizeBytes: fileBuffer.length,
-      sha256Checksum: serverChecksum,
-      patientProfileId: intent.patientProfileId,
-      uploadedAt: new Date(),
-      validationDetails: validation,
-    };
-
-    this.objects.set(storageKey, { buffer: fileBuffer, metadata });
-    return metadata;
   }
 
   async getDownloadSignedUrl(storageKey: string, patientProfileId: string): Promise<string> {

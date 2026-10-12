@@ -1,3 +1,5 @@
+import path from 'path';
+import { Worker } from 'worker_threads';
 import { PDFDocument } from 'pdf-lib';
 import imageSize from 'image-size';
 
@@ -15,8 +17,11 @@ export const MAX_PDF_PAGES = 10;
 export const MAX_IMAGE_DIMENSION = 8000;
 export const MIN_IMAGE_DIMENSION = 50;
 
+const WORKER_SCRIPT_PATH = path.resolve(__dirname, 'parser-worker.cjs');
+
 /**
  * Validates file magic bytes against claimed MIME type.
+ * Fast in-process pre-check to reject obviously invalid binaries without thread overhead.
  */
 export function validateFileMagicBytes(buffer: Buffer, mimeType: string): boolean {
   if (buffer.length < 4) return false;
@@ -38,49 +43,68 @@ export function validateFileMagicBytes(buffer: Buffer, mimeType: string): boolea
 }
 
 /**
- * Performs deep parser-based validation of uploaded document bytes.
- * Validates actual document structure beyond superficial magic byte headers.
- * Detects corrupt files, disguised extensions, encrypted PDFs, page-count overflows, and excessive image dimensions.
+ * Concurrency manager to bound simultaneous worker threads and prevent
+ * CPU/memory exhaustion under high upload volume.
+ */
+export class ParserConcurrencyManager {
+  private activeCount = 0;
+  private queue: Array<() => void> = [];
+  public maxConcurrent = 4;
+  public maxQueue = 20;
+
+  async acquire(): Promise<void> {
+    if (this.activeCount < this.maxConcurrent) {
+      this.activeCount++;
+      return;
+    }
+    if (this.queue.length >= this.maxQueue) {
+      throw new Error(
+        `Service busy: Concurrency limit reached for document parsing (active: ${this.activeCount}, queued: ${this.queue.length})`
+      );
+    }
+    await new Promise<void>((resolve) => {
+      this.queue.push(() => {
+        this.activeCount++;
+        resolve();
+      });
+    });
+  }
+
+  release(): void {
+    this.activeCount = Math.max(0, this.activeCount - 1);
+    const next = this.queue.shift();
+    if (next) {
+      next();
+    }
+  }
+
+  getActiveCount(): number {
+    return this.activeCount;
+  }
+
+  getQueueLength(): number {
+    return this.queue.length;
+  }
+
+  reset(): void {
+    this.activeCount = 0;
+    this.queue = [];
+  }
+}
+
+export const parserConcurrency = new ParserConcurrencyManager();
+
+/**
+ * Fallback in-process validation if Worker cannot be initialized.
  */
 async function runDocumentValidationInternal(
   buffer: Buffer,
   claimedMimeType: string
 ): Promise<DocumentValidationResult> {
-
   const fileSizeBytes = buffer.length;
 
-  if (fileSizeBytes === 0) {
-    return {
-      isValid: false,
-      mimeType: claimedMimeType,
-      fileSizeBytes: 0,
-      error: 'File is empty (0 bytes). Upload must fail closed.',
-    };
-  }
-
-  if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
-    return {
-      isValid: false,
-      mimeType: claimedMimeType,
-      fileSizeBytes,
-      error: `File size ${fileSizeBytes} bytes exceeds maximum limit of 15MB.`,
-    };
-  }
-
-  // 1. Initial magic byte verification
-  if (!validateFileMagicBytes(buffer, claimedMimeType)) {
-    return {
-      isValid: false,
-      mimeType: claimedMimeType,
-      fileSizeBytes,
-      error: `File magic byte signature does not match claimed MIME type ${claimedMimeType}`,
-    };
-  }
-
-  // 2. Parser-based validation
   if (claimedMimeType === 'application/pdf') {
     try {
-      // PDF structure validation with pdf-lib
       const pdfDoc = await PDFDocument.load(buffer, {
         ignoreEncryption: false,
         updateMetadata: false,
@@ -123,14 +147,6 @@ async function runDocumentValidationInternal(
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Invalid PDF structure';
-      if (msg.toLowerCase().includes('encrypted') || msg.toLowerCase().includes('password')) {
-        return {
-          isValid: false,
-          mimeType: claimedMimeType,
-          fileSizeBytes,
-          error: 'Encrypted or password-protected PDF files are not supported.',
-        };
-      }
       return {
         isValid: false,
         mimeType: claimedMimeType,
@@ -152,7 +168,6 @@ async function runDocumentValidationInternal(
         };
       }
 
-      // Check format matches claimed MIME
       const expectedType = claimedMimeType === 'image/jpeg' ? 'jpg' : 'png';
       if (dimensions.type !== expectedType && !(claimedMimeType === 'image/jpeg' && dimensions.type === 'jpeg')) {
         return {
@@ -163,11 +178,7 @@ async function runDocumentValidationInternal(
         };
       }
 
-      // Enforce dimension boundaries
-      if (
-        dimensions.width > MAX_IMAGE_DIMENSION ||
-        dimensions.height > MAX_IMAGE_DIMENSION
-      ) {
+      if (dimensions.width > MAX_IMAGE_DIMENSION || dimensions.height > MAX_IMAGE_DIMENSION) {
         return {
           isValid: false,
           mimeType: claimedMimeType,
@@ -177,10 +188,7 @@ async function runDocumentValidationInternal(
         };
       }
 
-      if (
-        dimensions.width < MIN_IMAGE_DIMENSION ||
-        dimensions.height < MIN_IMAGE_DIMENSION
-      ) {
+      if (dimensions.width < MIN_IMAGE_DIMENSION || dimensions.height < MIN_IMAGE_DIMENSION) {
         return {
           isValid: false,
           mimeType: claimedMimeType,
@@ -216,36 +224,140 @@ async function runDocumentValidationInternal(
 }
 
 /**
- * Validates document content with resource limits and an execution timeout to prevent parser hangs.
+ * Validates document content with strict resource limits:
+ * 1. File size limits are enforced before passing to the parser.
+ * 2. Magic byte signatures are verified in-process.
+ * 3. Deep CPU-intensive PDF/image parsing is isolated in a bounded Worker thread.
+ * 4. Timeouts forcefully terminate the underlying Worker thread via worker.terminate(),
+ *    stopping runaway CPU loops, zip bombs, and freeing memory.
+ * 5. Concurrency is strictly bounded by ParserConcurrencyManager.
  */
 export async function validateDocumentContent(
   buffer: Buffer,
   claimedMimeType: string,
-  timeoutMs = 5000
+  timeoutMs = 5000,
+  testOptions?: { _simulateHang?: boolean }
 ): Promise<DocumentValidationResult> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<DocumentValidationResult>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`Document parser timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
+  const fileSizeBytes = buffer.length;
 
-  try {
-    const result = await Promise.race([
-      runDocumentValidationInternal(buffer, claimedMimeType),
-      timeoutPromise,
-    ]);
-    if (timer) clearTimeout(timer);
-    return result;
-  } catch (err: unknown) {
-    if (timer) clearTimeout(timer);
-    const msg = err instanceof Error ? err.message : 'Parser validation failure';
+  if (fileSizeBytes === 0) {
     return {
       isValid: false,
       mimeType: claimedMimeType,
-      fileSizeBytes: buffer.length,
-      error: msg,
+      fileSizeBytes: 0,
+      error: 'File is empty (0 bytes). Upload must fail closed.',
     };
   }
-}
 
+  if (fileSizeBytes > MAX_FILE_SIZE_BYTES) {
+    return {
+      isValid: false,
+      mimeType: claimedMimeType,
+      fileSizeBytes,
+      error: `File size ${fileSizeBytes} bytes exceeds maximum limit of 15MB.`,
+    };
+  }
+
+  // Initial magic byte verification
+  if (!validateFileMagicBytes(buffer, claimedMimeType)) {
+    return {
+      isValid: false,
+      mimeType: claimedMimeType,
+      fileSizeBytes,
+      error: `File magic byte signature does not match claimed MIME type ${claimedMimeType}`,
+    };
+  }
+
+  // Acquire concurrency slot
+  await parserConcurrency.acquire();
+
+  return new Promise<DocumentValidationResult>((resolve) => {
+    let hasFinished = false;
+    let worker: Worker | null = null;
+    let timer: NodeJS.Timeout | null = null;
+
+    const cleanup = async () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      parserConcurrency.release();
+      if (worker) {
+        try {
+          await worker.terminate();
+        } catch {}
+        worker = null;
+      }
+    };
+
+    timer = setTimeout(async () => {
+      if (hasFinished) return;
+      hasFinished = true;
+      if (worker) {
+        try {
+          await worker.terminate();
+        } catch {}
+        worker = null;
+      }
+      parserConcurrency.release();
+      resolve({
+        isValid: false,
+        mimeType: claimedMimeType,
+        fileSizeBytes,
+        error: `Document parser timed out and execution was terminated after ${timeoutMs}ms`,
+      });
+    }, timeoutMs);
+
+    try {
+      worker = new Worker(WORKER_SCRIPT_PATH);
+
+      worker.on('message', async (result: DocumentValidationResult) => {
+        if (hasFinished) return;
+        hasFinished = true;
+        await cleanup();
+        resolve(result);
+      });
+
+      worker.on('error', async (err: Error) => {
+        if (hasFinished) return;
+        hasFinished = true;
+        await cleanup();
+        resolve({
+          isValid: false,
+          mimeType: claimedMimeType,
+          fileSizeBytes,
+          error: `Worker execution error: ${err.message}`,
+        });
+      });
+
+      worker.on('exit', async (code: number) => {
+        if (hasFinished) return;
+        hasFinished = true;
+        await cleanup();
+        if (code !== 0) {
+          resolve({
+            isValid: false,
+            mimeType: claimedMimeType,
+            fileSizeBytes,
+            error: `Worker exited prematurely with code ${code}`,
+          });
+        }
+      });
+
+      // Post payload to worker
+      worker.postMessage({
+        buffer,
+        mimeType: claimedMimeType,
+        maxPdfPages: MAX_PDF_PAGES,
+        maxImageDimension: MAX_IMAGE_DIMENSION,
+        minImageDimension: MIN_IMAGE_DIMENSION,
+        _simulateHang: testOptions?._simulateHang,
+      });
+    } catch (err: unknown) {
+      // Fallback if Worker thread creation fails in unsupported environment
+      if (timer) clearTimeout(timer);
+      parserConcurrency.release();
+      runDocumentValidationInternal(buffer, claimedMimeType).then(resolve);
+    }
+  });
+}

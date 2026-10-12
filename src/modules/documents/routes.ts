@@ -85,6 +85,8 @@ export function createDocumentRouter(documentService: DocumentService): Router {
         msg.includes('exceeds') ||
         msg.includes('mismatch') ||
         msg.includes('consumed') ||
+        msg.includes('in progress') ||
+        msg.includes('rejected') ||
         msg.includes('Unsupported')
       ) {
         res.status(400).json({ error: { code: 'BAD_REQUEST', message: msg } });
