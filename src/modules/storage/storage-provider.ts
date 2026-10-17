@@ -176,8 +176,6 @@ export class S3StorageProvider implements StorageProvider {
     const command = new PutObjectCommand({
       Bucket: this.bucket,
       Key: storageKey,
-      ContentType: request.mimeType,
-      ContentLength: request.fileSizeBytes,
     });
 
     const uploadSignedUrl = await getSignedUrl(this.s3Client, command, {
