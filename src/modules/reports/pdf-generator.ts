@@ -157,12 +157,15 @@ function formatEventType(type: string | undefined): string {
  * Converts 24-hr time strings to 12-hour AM/PM.
  */
 function formatReminderTimeString(timeStr: string): string {
-  const [hStr, mStr] = timeStr.trim().split(':');
+  if (!timeStr) return '';
+  const parts = timeStr.trim().split(':');
+  const hStr = parts[0];
+  if (!hStr) return timeStr;
   const h = parseInt(hStr, 10);
   if (isNaN(h)) return timeStr;
   const ampm = h >= 12 ? 'PM' : 'AM';
   const h12 = h % 12 || 12;
-  const m = mStr ? mStr.padStart(2, '0') : '00';
+  const m = parts[1] ? parts[1].padStart(2, '0') : '00';
   return `${h12}:${m} ${ampm}`;
 }
 
