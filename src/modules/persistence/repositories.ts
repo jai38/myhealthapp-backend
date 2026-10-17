@@ -969,7 +969,7 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
         route: item.route,
         instructions: item.instructions,
         isActiveMedication: Boolean(item.isActiveMedication),
-        sourceDocumentId: input.documentId,
+        sourceDocumentId: docId,
       }));
 
       await tx.prescriptionItem.createMany({
@@ -977,27 +977,74 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
       });
 
       // 4b. Create corresponding Medication records
-      const medicationRows = itemRows.map((item) => ({
-        id: crypto.randomUUID(),
-        patientProfileId: input.patientProfileId,
-        prescriptionItemId: item.id,
-        prescriptionId,
-        sourceDocumentId: input.documentId,
-        nameAsWritten: item.nameAsWritten,
-        normalizedMedicineName: item.normalizedMedicineName,
-        strength: item.strength,
-        dosageForm: item.dosageForm,
-        route: item.route,
-        prescribedInstructions: item.instructions || item.frequencyText,
-        status: item.isActiveMedication ? ('ACTIVE' as const) : ('INACTIVE' as const),
-        startDate: parseDate(input.prescription.prescriptionDate),
-        createdAt: now,
-        updatedAt: now,
-      }));
+      const medicationRows = itemRows.map((item) => {
+        const isActive = Boolean(item.isActiveMedication);
+        return {
+          id: crypto.randomUUID(),
+          patientProfileId: input.patientProfileId,
+          prescriptionItemId: item.id,
+          prescriptionId,
+          sourceDocumentId: docId,
+          nameAsWritten: item.nameAsWritten,
+          normalizedMedicineName: item.normalizedMedicineName,
+          strength: item.strength,
+          dosageForm: item.dosageForm,
+          route: item.route,
+          prescribedInstructions: item.instructions || item.frequencyText,
+          status: isActive ? ('ACTIVE' as const) : ('INACTIVE' as const),
+          startDate: parseDate(input.prescription.prescriptionDate),
+          reminderTimes: isActive ? ['08:00', '20:00'] : undefined,
+          createdAt: now,
+          updatedAt: now,
+        };
+      });
 
       await tx.medication.createMany({
         data: medicationRows,
       });
+
+      // 4c. Generate initial 7-day dose schedule for active medications
+      const activeMedications = medicationRows.filter((m) => m.status === 'ACTIVE');
+      if (activeMedications.length > 0) {
+        const doseLogsToCreate: Array<{
+          id: string;
+          medicationId: string;
+          patientProfileId: string;
+          scheduledTime: Date;
+          status: 'PENDING';
+          createdAt: Date;
+          updatedAt: Date;
+        }> = [];
+
+        const defaultTimes = ['08:00', '20:00'];
+        for (const med of activeMedications) {
+          for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+            for (const timeStr of defaultTimes) {
+              const [h, m] = timeStr.split(':').map(Number);
+              const target = new Date(now);
+              target.setDate(target.getDate() + dayOffset);
+              target.setHours(h ?? 8, m ?? 0, 0, 0);
+              if (target.getTime() > now.getTime()) {
+                doseLogsToCreate.push({
+                  id: crypto.randomUUID(),
+                  medicationId: med.id,
+                  patientProfileId: input.patientProfileId,
+                  scheduledTime: target,
+                  status: 'PENDING',
+                  createdAt: now,
+                  updatedAt: now,
+                });
+              }
+            }
+          }
+        }
+
+        if (doseLogsToCreate.length > 0) {
+          await tx.doseLog.createMany({
+            data: doseLogsToCreate,
+          });
+        }
+      }
 
       // 5. Ingest into Verified Clinical Timeline
       const createdTimeline = await tx.timelineEvent.create({
@@ -1010,7 +1057,7 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
           datePrecision: input.prescription.dateIsUncertain ? 'UNCERTAIN' : 'EXACT',
           title: input.timelineEvent.title,
           summary: input.timelineEvent.summary,
-          sourceDocumentId: input.documentId,
+          sourceDocumentId: docId,
           sourcePrescriptionId: prescriptionId,
           isVerified: true,
           createdAt: now,
@@ -1025,7 +1072,7 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
 
       // 7. Update document status to CONFIRMED
       await tx.document.update({
-        where: { id: input.documentId },
+        where: { id: docId },
         data: { status: 'CONFIRMED' },
       });
 
@@ -2029,7 +2076,7 @@ export class InMemoryPrescriptionRepository implements PrescriptionRepository {
       route: it.route,
       instructions: it.instructions,
       isActiveMedication: Boolean(it.isActiveMedication),
-      sourceDocumentId: input.documentId,
+      sourceDocumentId: docId,
       createdAt: now,
       updatedAt: now,
     }));

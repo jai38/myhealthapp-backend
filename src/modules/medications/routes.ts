@@ -35,8 +35,64 @@ const CorrectDoseActionSchema = z.object({
   notes: z.string().max(500).optional(),
 });
 
+const CreateManualMedicationSchema = z.object({
+  nameAsWritten: z.string().min(1, 'Medication name is required'),
+  dosageForm: z.string().default('TABLET'),
+  strength: z.string().optional(),
+  route: z.string().default('ORAL'),
+  prescribedInstructions: z.string().optional(),
+  reminderTimes: z
+    .array(z.string().regex(TIME_REGEX, 'Time must be in HH:mm 24-hour format'))
+    .optional(),
+  startDate: z.string().regex(DATE_REGEX, 'Start date must be in YYYY-MM-DD format').optional(),
+  endDate: z.string().regex(DATE_REGEX, 'End date must be in YYYY-MM-DD format').optional(),
+  notes: z.string().max(500).optional(),
+});
+
 export const createMedicationRouter = (medicationService: MedicationService): Router => {
   const router = Router();
+
+  /**
+   * POST /api/v1/medications
+   * Creates a manual medication record with optional reminder schedule.
+   */
+  router.post('/', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const patientProfileId = req.authContext?.patientProfileId;
+      if (!patientProfileId) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+        return;
+      }
+
+      const parseResult = CreateManualMedicationSchema.safeParse(req.body);
+      if (!parseResult.success) {
+        res.status(400).json({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid medication input',
+            details: parseResult.error.format(),
+          },
+        });
+        return;
+      }
+
+      const created = await medicationService.createManualMedication(
+        patientProfileId,
+        parseResult.data
+      );
+
+      res.status(201).json({
+        data: created,
+        message: 'Medication added successfully',
+      });
+    } catch (err: any) {
+      if (err.statusCode === 400) {
+        res.status(400).json({ error: { code: 'BAD_REQUEST', message: err.message } });
+        return;
+      }
+      next(err);
+    }
+  });
 
   /**
    * GET /api/v1/medications

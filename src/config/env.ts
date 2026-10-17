@@ -14,6 +14,8 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(16).default('dev-insecure-jwt-secret-replace-in-production-min-32-chars-long'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   CLIENT_URL: z.string().default('http://localhost:8081'),
+  GEMINI_API_KEY: z.string().optional(),
+  AI_EXTRACTION_PROVIDER: z.string().default('auto'),
 });
 
 const parsed = envSchema.safeParse(process.env);

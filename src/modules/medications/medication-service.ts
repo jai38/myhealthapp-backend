@@ -32,6 +32,57 @@ export class MedicationService {
   }
 
   /**
+   * Manually creates a medication record and generates dose schedule if reminder times are provided.
+   */
+  async createManualMedication(
+    patientProfileId: string,
+    input: {
+      nameAsWritten: string;
+      dosageForm: string;
+      strength?: string;
+      route?: string;
+      prescribedInstructions?: string;
+      reminderTimes?: string[];
+      startDate?: string;
+      endDate?: string;
+      notes?: string;
+    }
+  ): Promise<MedicationRecord> {
+    if (!input.nameAsWritten || !input.nameAsWritten.trim()) {
+      const err = new Error('Medication name is required');
+      (err as any).statusCode = 400;
+      throw err;
+    }
+
+    const hasReminders = Boolean(input.reminderTimes && input.reminderTimes.length > 0);
+    if (hasReminders && input.reminderTimes) {
+      this.validateReminderTimes(input.reminderTimes);
+    }
+
+    const created = await this.medicationRepo.createMedication({
+      patientProfileId,
+      nameAsWritten: input.nameAsWritten.trim(),
+      dosageForm: input.dosageForm || 'TABLET',
+      strength: input.strength?.trim() || undefined,
+      route: input.route || 'ORAL',
+      prescribedInstructions: input.prescribedInstructions?.trim() || undefined,
+      status: hasReminders ? 'ACTIVE' : 'INACTIVE',
+      startDate: input.startDate || new Date().toISOString().split('T')[0],
+      endDate: input.endDate,
+      reminderTimes: hasReminders ? input.reminderTimes : undefined,
+      notes: input.notes?.trim() || undefined,
+    });
+
+    if (hasReminders) {
+      const now = new Date();
+      const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      await this.generateDoseOccurrencesForMedication(created, now, horizon);
+    }
+
+    return created;
+  }
+
+  /**
    * Retrieves full details, provenance, and dose history for a single medication.
    */
   async getMedicationDetails(

@@ -580,5 +580,59 @@ describe('Phase 4: Medication Management & Reminders API & Clinical Integrity', 
       expect(urlRes.body.data.signedUrl).toBeDefined();
       expect(urlRes.body.data.filename).toBe('rx-sample.pdf');
     });
+
+    it('Manual Creation: successfully creates medication with reminders and generates dose occurrences', async () => {
+      const res = await request(app)
+        .post('/api/v1/medications')
+        .set('Authorization', `Bearer ${tokenPatientA}`)
+        .send({
+          nameAsWritten: 'Paracetamol 500mg',
+          dosageForm: 'TABLET',
+          strength: '500mg',
+          reminderTimes: ['08:00', '20:00'],
+          prescribedInstructions: 'Take after meals',
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.nameAsWritten).toBe('Paracetamol 500mg');
+      expect(res.body.data.status).toBe('ACTIVE');
+      expect(res.body.data.reminderTimes).toEqual(['08:00', '20:00']);
+
+      // Verify doses were generated
+      const dosesRes = await request(app)
+        .get('/api/v1/medications/doses')
+        .set('Authorization', `Bearer ${tokenPatientA}`);
+
+      expect(dosesRes.status).toBe(200);
+      expect(dosesRes.body.data.length).toBeGreaterThan(0);
+      expect(dosesRes.body.data[0].medicationId).toBe(res.body.data.id);
+    });
+
+    it('Manual Creation: creates inactive medication when no reminder times provided', async () => {
+      const res = await request(app)
+        .post('/api/v1/medications')
+        .set('Authorization', `Bearer ${tokenPatientA}`)
+        .send({
+          nameAsWritten: 'Vitamin D3',
+          dosageForm: 'CAPSULE',
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.data.nameAsWritten).toBe('Vitamin D3');
+      expect(res.body.data.status).toBe('INACTIVE');
+    });
+
+    it('Manual Creation: rejects creation if medication name is missing', async () => {
+      const res = await request(app)
+        .post('/api/v1/medications')
+        .set('Authorization', `Bearer ${tokenPatientA}`)
+        .send({
+          nameAsWritten: '',
+          dosageForm: 'TABLET',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('VALIDATION_ERROR');
+    });
   });
 });

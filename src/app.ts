@@ -13,6 +13,7 @@ import {
   PrescriptionExtractionProvider,
   MockPrescriptionExtractionProvider,
 } from './modules/ai-extraction/provider.js';
+import { GeminiPrescriptionExtractionProvider } from './modules/ai-extraction/gemini-provider.js';
 import { DocumentService } from './modules/documents/document-service.js';
 import { ExtractionJobQueue } from './modules/ai-extraction/job-queue.js';
 import { PrescriptionService } from './modules/prescriptions/prescription-service.js';
@@ -168,8 +169,13 @@ export const createApp = (options?: AppOptions): Express => {
       : new S3StorageProvider(uploadIntentRepo));
 
 
+  const isTest = process.env.NODE_ENV === 'test';
+  const geminiApiKey = process.env.GEMINI_API_KEY || (env as any).GEMINI_API_KEY;
   const extractionProvider =
-    options?.extractionProvider ?? new MockPrescriptionExtractionProvider();
+    options?.extractionProvider ??
+    (geminiApiKey && (!isTest || process.env.AI_EXTRACTION_PROVIDER === 'gemini') && (process.env.AI_EXTRACTION_PROVIDER === 'gemini' || process.env.AI_EXTRACTION_PROVIDER === 'auto' || !process.env.AI_EXTRACTION_PROVIDER)
+      ? new GeminiPrescriptionExtractionProvider(geminiApiKey)
+      : new MockPrescriptionExtractionProvider());
 
   const documentService =
     options?.documentService ?? new DocumentService(storageProvider, docRepo);

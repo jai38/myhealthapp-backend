@@ -86,10 +86,24 @@ export const PatientMedicineCorrectionSchema = z.object({
 });
 
 export const PatientPrescriptionReviewSchema = z.object({
+  documentId: z.string().optional(),
+  document_id: z.string().optional(),
   prescription_date: z
     .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .optional(),
+    .optional()
+    .transform((val) => {
+      if (!val || !val.trim()) return undefined;
+      const trimmed = val.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+      const dmy = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if (dmy && dmy[1] && dmy[2] && dmy[3]) {
+        const d = dmy[1].padStart(2, '0');
+        const m = dmy[2].padStart(2, '0');
+        const y = dmy[3];
+        return `${y}-${m}-${d}`;
+      }
+      return undefined;
+    }),
   date_is_uncertain: z.boolean().default(false),
   doctor_name: z.string().optional(),
   clinic_hospital_name: z.string().optional(),

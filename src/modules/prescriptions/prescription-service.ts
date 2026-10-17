@@ -64,15 +64,17 @@ export class PrescriptionService {
       ? `Prescription from ${validatedReview.clinic_hospital_name}`
       : 'Prescription Document';
 
-    // Document ID can be inferred or checked via the job; we pass documentId from review or job in repo
-    const documentId = validatedReview.medicines[0]
-      ? (validatedReview as any).document_id || ''
-      : '';
+    const resolvedDocumentId =
+      validatedReview.documentId ||
+      validatedReview.document_id ||
+      (rawReviewData as any).documentId ||
+      (rawReviewData as any).document_id ||
+      '';
 
     // 3. Execute atomic transaction in durable repository
     return this.prescriptionRepository.confirmPrescriptionTransaction({
       patientProfileId,
-      documentId: (validatedReview as any).documentId || documentId,
+      documentId: resolvedDocumentId,
       jobId,
       prescription: {
         prescriptionDate: validatedReview.prescription_date,
