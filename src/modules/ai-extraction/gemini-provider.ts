@@ -119,7 +119,7 @@ export class GeminiPrescriptionExtractionProvider implements PrescriptionExtract
   private apiKey: string;
   private model: string;
 
-  constructor(apiKey: string, model: string = 'gemini-1.5-flash') {
+  constructor(apiKey: string, model: string = process.env.GEMINI_MODEL || 'gemini-2.5-flash') {
     this.apiKey = apiKey.trim();
     this.model = model;
     this.providerName = `gemini-${model}`;
