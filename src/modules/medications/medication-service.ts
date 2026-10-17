@@ -46,7 +46,8 @@ export class MedicationService {
       startDate?: string;
       endDate?: string;
       notes?: string;
-    }
+    },
+    tzOffsetMinutes: number = 0
   ): Promise<MedicationRecord> {
     if (!input.nameAsWritten || !input.nameAsWritten.trim()) {
       const err = new Error('Medication name is required');
@@ -76,7 +77,7 @@ export class MedicationService {
     if (hasReminders) {
       const now = new Date();
       const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-      await this.generateDoseOccurrencesForMedication(created, now, horizon);
+      await this.generateDoseOccurrencesForMedication(created, now, horizon, tzOffsetMinutes);
     }
 
     return created;
@@ -143,7 +144,8 @@ export class MedicationService {
     patientProfileId: string,
     reminderTimes: string[],
     startDate?: string,
-    endDate?: string
+    endDate?: string,
+    tzOffsetMinutes: number = 0
   ): Promise<MedicationRecord> {
     const med = await this.getMedicationDetails(id, patientProfileId);
 
@@ -175,7 +177,7 @@ export class MedicationService {
     // Replenish dose occurrences for the next 7 days
     const now = new Date();
     const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    await this.generateDoseOccurrencesForMedication(updated, now, horizon);
+    await this.generateDoseOccurrencesForMedication(updated, now, horizon, tzOffsetMinutes);
 
     return updated;
   }
@@ -188,7 +190,8 @@ export class MedicationService {
     patientProfileId: string,
     reminderTimes: string[],
     startDate?: string,
-    endDate?: string
+    endDate?: string,
+    tzOffsetMinutes: number = 0
   ): Promise<MedicationRecord> {
     const med = await this.getMedicationDetails(id, patientProfileId);
 
@@ -214,7 +217,7 @@ export class MedicationService {
 
     if (updated.status === 'ACTIVE') {
       const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-      await this.generateDoseOccurrencesForMedication(updated, now, horizon);
+      await this.generateDoseOccurrencesForMedication(updated, now, horizon, tzOffsetMinutes);
     }
 
     return updated;
@@ -246,7 +249,11 @@ export class MedicationService {
   /**
    * Resumes a paused medication and regenerates upcoming dose occurrences.
    */
-  async resumeMedication(id: string, patientProfileId: string): Promise<MedicationRecord> {
+  async resumeMedication(
+    id: string,
+    patientProfileId: string,
+    tzOffsetMinutes: number = 0
+  ): Promise<MedicationRecord> {
     const med = await this.getMedicationDetails(id, patientProfileId);
     if (med.status !== 'PAUSED') {
       const err = new Error('Only paused medications can be resumed');
@@ -269,7 +276,7 @@ export class MedicationService {
     // Replenish occurrences
     const now = new Date();
     const horizon = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    await this.generateDoseOccurrencesForMedication(updated, now, horizon);
+    await this.generateDoseOccurrencesForMedication(updated, now, horizon, tzOffsetMinutes);
 
     return updated;
   }
@@ -336,7 +343,8 @@ export class MedicationService {
   async getDoseOccurrences(
     patientProfileId: string,
     from: Date,
-    to: Date
+    to: Date,
+    tzOffsetMinutes: number = 0
   ): Promise<DoseLogRecord[]> {
     // Bound window to max 30 days
     const maxWindowMs = 30 * 24 * 60 * 60 * 1000;
@@ -350,7 +358,7 @@ export class MedicationService {
     const activeMeds = await this.medicationRepo.listMedications(patientProfileId, 'ACTIVE');
     for (const med of activeMeds) {
       if (med.reminderTimes && med.reminderTimes.length > 0) {
-        await this.generateDoseOccurrencesForMedication(med, from, to);
+        await this.generateDoseOccurrencesForMedication(med, from, to, tzOffsetMinutes);
       }
     }
 
@@ -450,7 +458,8 @@ export class MedicationService {
   private async generateDoseOccurrencesForMedication(
     med: MedicationRecord,
     from: Date,
-    to: Date
+    to: Date,
+    tzOffsetMinutes: number = 0
   ): Promise<void> {
     if (!med.reminderTimes || med.reminderTimes.length === 0) return;
 
@@ -475,8 +484,18 @@ export class MedicationService {
         const parts = timeStr.split(':');
         const hours = parseInt(parts[0] ?? '0', 10);
         const minutes = parseInt(parts[1] ?? '0', 10);
-        const scheduledTime = new Date(cur);
-        scheduledTime.setUTCHours(hours, minutes, 0, 0);
+
+        let scheduledTime: Date;
+        if (tzOffsetMinutes !== 0) {
+          const y = cur.getUTCFullYear();
+          const mon = cur.getUTCMonth();
+          const d = cur.getUTCDate();
+          const utcMs = Date.UTC(y, mon, d, hours, minutes, 0, 0) + (tzOffsetMinutes * 60 * 1000);
+          scheduledTime = new Date(utcMs);
+        } else {
+          scheduledTime = new Date(cur);
+          scheduledTime.setUTCHours(hours, minutes, 0, 0);
+        }
 
         // Check medication start and end dates
         if (medStart && scheduledTime < medStart) continue;

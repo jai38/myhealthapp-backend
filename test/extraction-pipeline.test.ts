@@ -304,7 +304,13 @@ describe('Prescription Extraction Job Lifecycle & Patient Confirmation', () => {
   });
 
   it('executes explicit patient confirmation, preserves exact text, enforces medical safety rules', async () => {
-    const app = createApp({ storageProvider, docRepo, jobRepo, prescriptionRepo });
+    const app = createApp({
+      storageProvider,
+      docRepo,
+      jobRepo,
+      prescriptionRepo,
+      extractionProvider: new MockPrescriptionExtractionProvider({ mode: 'CLEAN' }),
+    });
     const documentId = await uploadTestDocument(app);
 
     // 1. Submit extraction
@@ -389,7 +395,13 @@ describe('Prescription Extraction Job Lifecycle & Patient Confirmation', () => {
 
   it('proves clinical records survive service reinitialization and duplicate confirmation across instances is blocked', async () => {
     // Instance 1 creates and confirms prescription
-    const appInstance1 = createApp({ storageProvider, docRepo, jobRepo, prescriptionRepo });
+    const appInstance1 = createApp({
+      storageProvider,
+      docRepo,
+      jobRepo,
+      prescriptionRepo,
+      extractionProvider: new MockPrescriptionExtractionProvider({ mode: 'CLEAN' }),
+    });
     const documentId = await uploadTestDocument(appInstance1);
 
     const submitRes = await request(appInstance1)

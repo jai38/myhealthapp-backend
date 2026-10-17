@@ -7,6 +7,17 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
+function parseTimezoneOffset(req: Request): number {
+  const val = req.headers['x-timezone-offset'];
+  if (typeof val === 'string') {
+    const num = parseInt(val, 10);
+    if (!isNaN(num) && num >= -840 && num <= 840) {
+      return num;
+    }
+  }
+  return 0;
+}
+
 const ActivateMedicationSchema = z.object({
   reminderTimes: z.array(z.string().regex(TIME_REGEX, 'Time must be in HH:mm 24-hour format')).min(1, 'At least one reminder time is required'),
   startDate: z.string().regex(DATE_REGEX, 'Start date must be in YYYY-MM-DD format').optional(),
@@ -76,9 +87,11 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
         return;
       }
 
+      const tzOffset = parseTimezoneOffset(req);
       const created = await medicationService.createManualMedication(
         patientProfileId,
-        parseResult.data
+        parseResult.data,
+        tzOffset
       );
 
       res.status(201).json({
@@ -159,7 +172,8 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
         to = parsedTo;
       }
 
-      const doses = await medicationService.getDoseOccurrences(patientProfileId, from, to);
+      const tzOffset = parseTimezoneOffset(req);
+      const doses = await medicationService.getDoseOccurrences(patientProfileId, from, to, tzOffset);
       res.status(200).json({ data: doses });
     } catch (err) {
       next(err);
@@ -345,12 +359,14 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
       }
 
       const { reminderTimes, startDate, endDate } = parseResult.data;
+      const tzOffset = parseTimezoneOffset(req);
       const updated = await medicationService.activateMedication(
         id,
         patientProfileId,
         reminderTimes,
         startDate,
-        endDate
+        endDate,
+        tzOffset
       );
 
       res.status(200).json({
@@ -401,12 +417,14 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
       }
 
       const { reminderTimes, startDate, endDate } = parseResult.data;
+      const tzOffset = parseTimezoneOffset(req);
       const updated = await medicationService.updateReminderPreferences(
         id,
         patientProfileId,
         reminderTimes,
         startDate,
-        endDate
+        endDate,
+        tzOffset
       );
 
       res.status(200).json({
@@ -475,7 +493,8 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
         return;
       }
 
-      const updated = await medicationService.resumeMedication(id, patientProfileId);
+      const tzOffset = parseTimezoneOffset(req);
+      const updated = await medicationService.resumeMedication(id, patientProfileId, tzOffset);
       res.status(200).json({ data: updated, message: 'Medication resumed. Reminders rescheduled.' });
     } catch (err: any) {
       if (err.statusCode === 404) {

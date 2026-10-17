@@ -8,6 +8,17 @@ const getParamString = (param: string | string[] | undefined): string => {
   return param || '';
 };
 
+function parseTimezoneOffset(req: Request): number {
+  const val = req.headers['x-timezone-offset'];
+  if (typeof val === 'string') {
+    const num = parseInt(val, 10);
+    if (!isNaN(num) && num >= -840 && num <= 840) {
+      return num;
+    }
+  }
+  return 0;
+}
+
 export function createPrescriptionRouter(
   jobQueue: ExtractionJobQueue,
   prescriptionService: PrescriptionService
@@ -151,10 +162,12 @@ export function createPrescriptionRouter(
         return;
       }
 
+      const tzOffset = parseTimezoneOffset(req);
       const result = await prescriptionService.confirmPrescription(
         { userId, patientProfileId },
         jobId,
-        parseResult.data
+        parseResult.data,
+        tzOffset
       );
 
       res.status(201).json({ data: result });

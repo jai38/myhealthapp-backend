@@ -119,7 +119,9 @@ export interface TimelineEventDetailRecord extends TimelineEventRecord {
     doctorName?: string;
     clinicHospitalName?: string;
     diagnosis?: string;
-    confirmedAt: Date;
+    reviewStatus?: string;
+    confirmedAt?: Date | string | null;
+    confirmedByUserId?: string | null;
     items: PrescriptionItemRecord[];
   };
 }
@@ -242,6 +244,7 @@ export interface ConfirmPrescriptionTransactionInput {
   patientProfileId: string;
   documentId: string;
   jobId: string;
+  tzOffsetMinutes?: number;
   prescription: {
     prescriptionDate?: string;
     dateIsUncertain: boolean;
@@ -1017,13 +1020,25 @@ export class PrismaPrescriptionRepository implements PrescriptionRepository {
         }> = [];
 
         const defaultTimes = ['08:00', '20:00'];
+        const tzOffset = input.tzOffsetMinutes ?? 0;
         for (const med of activeMedications) {
           for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
             for (const timeStr of defaultTimes) {
               const [h, m] = timeStr.split(':').map(Number);
-              const target = new Date(now);
-              target.setDate(target.getDate() + dayOffset);
-              target.setHours(h ?? 8, m ?? 0, 0, 0);
+              let target: Date;
+              if (tzOffset !== 0) {
+                const base = new Date(now);
+                base.setDate(base.getDate() + dayOffset);
+                const y = base.getUTCFullYear();
+                const mon = base.getUTCMonth();
+                const d = base.getUTCDate();
+                const utcMs = Date.UTC(y, mon, d, h ?? 8, m ?? 0, 0, 0) + (tzOffset * 60 * 1000);
+                target = new Date(utcMs);
+              } else {
+                target = new Date(now);
+                target.setDate(target.getDate() + dayOffset);
+                target.setHours(h ?? 8, m ?? 0, 0, 0);
+              }
               if (target.getTime() > now.getTime()) {
                 doseLogsToCreate.push({
                   id: crypto.randomUUID(),
@@ -1383,7 +1398,9 @@ export class PrismaTimelineRepository implements TimelineRepository {
             doctorName: ev.sourcePrescription.doctorName ?? undefined,
             clinicHospitalName: ev.sourcePrescription.clinicHospitalName ?? undefined,
             diagnosis: ev.sourcePrescription.diagnosis ?? undefined,
+            reviewStatus: ev.sourcePrescription.reviewStatus,
             confirmedAt: ev.sourcePrescription.confirmedAt,
+            confirmedByUserId: ev.sourcePrescription.confirmedByUserId ?? undefined,
             items: ev.sourcePrescription.items.map((it) => ({
               id: it.id,
               prescriptionId: it.prescriptionId,
@@ -2283,7 +2300,9 @@ export class InMemoryTimelineRepository implements TimelineRepository {
           doctorName: rxResult.prescription.doctorName,
           clinicHospitalName: rxResult.prescription.clinicHospitalName,
           diagnosis: rxResult.prescription.diagnosis,
+          reviewStatus: rxResult.prescription.reviewStatus,
           confirmedAt: rxResult.prescription.confirmedAt,
+          confirmedByUserId: rxResult.prescription.confirmedByUserId,
           items: rxResult.items,
         };
       }

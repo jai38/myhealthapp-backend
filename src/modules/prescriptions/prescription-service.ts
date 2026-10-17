@@ -33,7 +33,8 @@ export class PrescriptionService {
   async confirmPrescription(
     authContext: { userId: string; patientProfileId: string },
     jobId: string,
-    rawReviewData: PatientPrescriptionReview
+    rawReviewData: PatientPrescriptionReview,
+    tzOffsetMinutes: number = 0
   ): Promise<ConfirmedPrescriptionResult> {
     const { patientProfileId, userId } = authContext;
 
@@ -76,6 +77,7 @@ export class PrescriptionService {
       patientProfileId,
       documentId: resolvedDocumentId,
       jobId,
+      tzOffsetMinutes,
       prescription: {
         prescriptionDate: validatedReview.prescription_date,
         dateIsUncertain: validatedReview.date_is_uncertain,
