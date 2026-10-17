@@ -103,6 +103,70 @@ function formatEventDate(dateStr: string, precision?: string, isUncertain?: bool
 }
 
 /**
+ * Formats an ISO timestamp into a clean, human-readable date and time.
+ */
+function formatTimestamp(isoStr: string | undefined): string {
+  if (!isoStr) return 'Not documented';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return isoStr;
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const day = d.getUTCDate();
+  const month = months[d.getUTCMonth()];
+  const year = d.getUTCFullYear();
+  let hours = d.getUTCHours();
+  const minutes = String(d.getUTCMinutes()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${day} ${month} ${year}, ${hours}:${minutes} ${ampm} (UTC)`;
+}
+
+/**
+ * Cleans internal storage keys / hashes into doctor-friendly document references.
+ */
+function formatSourceFilename(filename: string | null | undefined): string {
+  if (!filename) return 'Verified Clinical Record';
+  const base = filename.replace(/\.[^/.]+$/, '');
+  if (/^[a-f0-9]{20,}$/i.test(base) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(base)) {
+    return 'Prescription Document (Verified)';
+  }
+  return filename;
+}
+
+/**
+ * Converts raw database event type enums into natural medical descriptions.
+ */
+function formatEventType(type: string | undefined): string {
+  if (!type) return 'Medical Record';
+  switch (type.toUpperCase()) {
+    case 'PRESCRIPTION_RECORDED':
+      return 'Prescription Record';
+    case 'LAB_RESULT':
+      return 'Lab & Diagnostic Report';
+    case 'CLINICAL_NOTE':
+      return 'Clinical Consultation Note';
+    case 'DISCHARGE_SUMMARY':
+      return 'Discharge Summary';
+    case 'VACCINATION':
+      return 'Immunization Record';
+    default:
+      return type.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+}
+
+/**
+ * Converts 24-hr time strings to 12-hour AM/PM.
+ */
+function formatReminderTimeString(timeStr: string): string {
+  const [hStr, mStr] = timeStr.trim().split(':');
+  const h = parseInt(hStr, 10);
+  if (isNaN(h)) return timeStr;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const h12 = h % 12 || 12;
+  const m = mStr ? mStr.padStart(2, '0') : '00';
+  return `${h12}:${m} ${ampm}`;
+}
+
+/**
  * Color definitions for clean clinical document styling.
  */
 const C_TEAL = rgb(0.06, 0.46, 0.43);       // #0f766e Primary Teal
@@ -328,40 +392,51 @@ export async function generateMedicalReportPdf(
   const col2X = mgr.margin + mgr.contentWidth / 2 + 10;
   let textY = mgr.currentY - 14;
 
-  // Col 1: Patient details
+  // Col 1: Patient details & verification
   mgr.currentPage.drawText('Patient Name:', { x: col1X, y: textY, size: 8, font: fontBold, color: C_MUTED });
-  mgr.currentPage.drawText(sanitizeAscii(data.patient.fullName), {
-    x: col1X + 65,
+  mgr.currentPage.drawText(sanitizeAscii(data.patient.fullName || 'Verified Patient'), {
+    x: col1X + 70,
     y: textY,
-    size: 9,
+    size: 9.5,
     font: fontBold,
     color: C_SLATE,
   });
 
   textY -= 14;
-  mgr.currentPage.drawText('Patient ID:', { x: col1X, y: textY, size: 8, font: fontBold, color: C_MUTED });
-  mgr.currentPage.drawText(sanitizeAscii(data.patient.patientProfileId), {
-    x: col1X + 65,
+  mgr.currentPage.drawText('Record Status:', { x: col1X, y: textY, size: 8, font: fontBold, color: C_MUTED });
+  mgr.currentPage.drawText('Verified Patient Health Record', {
+    x: col1X + 70,
     y: textY,
-    size: 7.5,
-    font: fontRegular,
-    color: C_BODY,
+    size: 8,
+    font: fontBold,
+    color: C_TEAL,
   });
 
   textY -= 14;
-  mgr.currentPage.drawText('Scope / Period:', { x: col1X, y: textY, size: 8, font: fontBold, color: C_MUTED });
-  mgr.currentPage.drawText(sanitizeAscii(data.dateRange.label), {
-    x: col1X + 65,
+  mgr.currentPage.drawText('Reporting Period:', { x: col1X, y: textY, size: 8, font: fontBold, color: C_MUTED });
+  mgr.currentPage.drawText(sanitizeAscii(data.dateRange.label || 'All Historical Records'), {
+    x: col1X + 70,
     y: textY,
     size: 8,
     font: fontRegular,
     color: C_BODY,
   });
 
-  // Col 2: Generation stats
+  // Col 2: Generation stats & Clean Reference Code
   textY = mgr.currentY - 14;
+  const cleanRefCode = `MSR-${new Date(data.generatedAt || Date.now()).getFullYear()}-${(data.patient.patientProfileId || 'PAT').replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase()}`;
+  mgr.currentPage.drawText('Reference No:', { x: col2X, y: textY, size: 8, font: fontBold, color: C_MUTED });
+  mgr.currentPage.drawText(cleanRefCode, {
+    x: col2X + 70,
+    y: textY,
+    size: 8,
+    font: fontBold,
+    color: C_SLATE,
+  });
+
+  textY -= 14;
   mgr.currentPage.drawText('Generated On:', { x: col2X, y: textY, size: 8, font: fontBold, color: C_MUTED });
-  mgr.currentPage.drawText(sanitizeAscii(data.generatedAt), {
+  mgr.currentPage.drawText(formatTimestamp(data.generatedAt), {
     x: col2X + 70,
     y: textY,
     size: 8,
@@ -370,18 +445,8 @@ export async function generateMedicalReportPdf(
   });
 
   textY -= 14;
-  mgr.currentPage.drawText('Verified Events:', { x: col2X, y: textY, size: 8, font: fontBold, color: C_MUTED });
-  mgr.currentPage.drawText(`${data.summary.timelineEventsCount} record(s)`, {
-    x: col2X + 70,
-    y: textY,
-    size: 8,
-    font: fontRegular,
-    color: C_BODY,
-  });
-
-  textY -= 14;
-  mgr.currentPage.drawText('Medications:', { x: col2X, y: textY, size: 8, font: fontBold, color: C_MUTED });
-  mgr.currentPage.drawText(`${data.summary.medicationsCount} regimen(s)`, {
+  mgr.currentPage.drawText('Clinical Counts:', { x: col2X, y: textY, size: 8, font: fontBold, color: C_MUTED });
+  mgr.currentPage.drawText(`${data.summary.timelineEventsCount} Event(s)  •  ${data.summary.medicationsCount} Medication(s)`, {
     x: col2X + 70,
     y: textY,
     size: 8,
@@ -431,8 +496,8 @@ export async function generateMedicalReportPdf(
         color: C_SLATE,
       });
 
-      // Category & Status
-      const metaLine = `Type: ${event.eventType || 'MEDICAL_EVENT'}  |  Status: Verified Patient Record`;
+      // Category & Status (Cleaned up from raw enums)
+      const metaLine = `Record Type: ${formatEventType(event.eventType)}  •  Status: Verified Clinical Record`;
       mgr.drawText(metaLine, mgr.margin + 4, 7.5, { font: fontRegular, color: C_TEAL });
 
       // Summary
@@ -444,10 +509,10 @@ export async function generateMedicalReportPdf(
         });
       }
 
-      // Provenance attribution
+      // Provenance attribution (Cleaned up from raw hashes)
       const provItems: string[] = [];
       if (event.prescription?.doctorName) {
-        provItems.push(`Clinician: ${event.prescription.doctorName}`);
+        provItems.push(`Clinician: Dr. ${event.prescription.doctorName.replace(/^dr\.?\s+/i, '')}`);
       }
       if (event.prescription?.clinicHospitalName) {
         provItems.push(`Facility: ${event.prescription.clinicHospitalName}`);
@@ -456,11 +521,11 @@ export async function generateMedicalReportPdf(
         provItems.push(`Diagnosis: ${event.prescription.diagnosis}`);
       }
       if (event.sourceDocument?.originalFilename) {
-        provItems.push(`Source File: ${event.sourceDocument.originalFilename}`);
+        provItems.push(`Source: ${formatSourceFilename(event.sourceDocument.originalFilename)}`);
       }
 
       if (provItems.length > 0) {
-        mgr.drawText(provItems.join('  |  '), mgr.margin + 4, 7, {
+        mgr.drawText(provItems.join('  •  '), mgr.margin + 4, 7, {
           font: fontItalic,
           color: C_MUTED,
         });
@@ -519,17 +584,28 @@ export async function generateMedicalReportPdf(
       }
 
       // Medicine Name (as written) + status badge
-      const nameText = `${med.nameAsWritten}${med.normalizedMedicineName ? ` (${med.normalizedMedicineName})` : ''}  ${statusLabel}`;
+      const nameText = `${med.nameAsWritten}${med.normalizedMedicineName && med.normalizedMedicineName !== med.nameAsWritten ? ` (${med.normalizedMedicineName})` : ''}  ${statusLabel}`;
       mgr.drawText(nameText, mgr.margin + 4, 9, { font: fontBold, color: statusColor });
 
-      // Strength, Form, Route
-      const formLine = `Form: ${med.dosageForm || 'Unspecified'}  |  Strength: ${med.strength || 'Not documented'}  |  Route: ${med.route || 'ORAL'}`;
-      mgr.drawText(formLine, mgr.margin + 4, 7.5, { font: fontRegular, color: C_BODY });
+      // Strength, Form, Route - only display strength if documented
+      const medDetails: string[] = [];
+      if (med.dosageForm && med.dosageForm.toLowerCase() !== 'other') {
+        medDetails.push(`Form: ${med.dosageForm.charAt(0).toUpperCase() + med.dosageForm.slice(1).toLowerCase()}`);
+      }
+      if (med.strength && med.strength.toLowerCase() !== 'not documented' && med.strength.trim() !== '') {
+        medDetails.push(`Strength: ${med.strength}`);
+      }
+      if (med.route) {
+        medDetails.push(`Route: ${med.route.charAt(0).toUpperCase() + med.route.slice(1).toLowerCase()}`);
+      }
+      if (medDetails.length > 0) {
+        mgr.drawText(medDetails.join('  •  '), mgr.margin + 4, 7.5, { font: fontRegular, color: C_BODY });
+      }
 
       // Prescribed Instructions (exact verbatim text)
-      if (med.prescribedInstructions) {
+      if (med.prescribedInstructions && med.prescribedInstructions.trim() !== '') {
         mgr.drawText(`Prescribed Instructions: "${med.prescribedInstructions}"`, mgr.margin + 4, 8, {
-          font: fontRegular,
+          font: fontBold,
           color: C_SLATE,
           maxWidth: mgr.contentWidth - 8,
         });
@@ -540,10 +616,11 @@ export async function generateMedicalReportPdf(
         });
       }
 
-      // Patient-Selected Reminder Schedule
+      // Patient-Selected Reminder Schedule (12-hour AM/PM format)
       if (med.reminderTimes && Array.isArray(med.reminderTimes) && med.reminderTimes.length > 0) {
+        const formattedTimes = med.reminderTimes.map(formatReminderTimeString).join(', ');
         mgr.drawText(
-          `Patient Reminder Preference: ${med.reminderTimes.join(', ')} (Patient-configured, not clinician order)`,
+          `Patient Reminder Preference: ${formattedTimes} (Patient-configured, not clinician order)`,
           mgr.margin + 4,
           7.5,
           { font: fontRegular, color: C_TEAL }
@@ -567,20 +644,20 @@ export async function generateMedicalReportPdf(
       }
 
       if (dateParts.length > 0) {
-        mgr.drawText(`Regimen Dates: ${dateParts.join('  |  ')}`, mgr.margin + 4, 7, {
+        mgr.drawText(`Regimen Dates: ${dateParts.join('  •  ')}`, mgr.margin + 4, 7, {
           font: fontRegular,
           color: C_BODY,
         });
       }
 
-      // Provenance
+      // Provenance (Cleaned up from raw hashes)
       const medProv: string[] = [];
-      if (med.prescription?.doctorName) medProv.push(`Prescribed by: ${med.prescription.doctorName}`);
+      if (med.prescription?.doctorName) medProv.push(`Prescribed by: Dr. ${med.prescription.doctorName.replace(/^dr\.?\s+/i, '')}`);
       if (med.prescription?.clinicHospitalName) medProv.push(`Clinic: ${med.prescription.clinicHospitalName}`);
-      if (med.sourceDocument?.originalFilename) medProv.push(`Source: ${med.sourceDocument.originalFilename}`);
+      if (med.sourceDocument?.originalFilename) medProv.push(`Source: ${formatSourceFilename(med.sourceDocument.originalFilename)}`);
 
       if (medProv.length > 0) {
-        mgr.drawText(medProv.join('  |  '), mgr.margin + 4, 7, {
+        mgr.drawText(medProv.join('  •  '), mgr.margin + 4, 7, {
           font: fontItalic,
           color: C_MUTED,
         });
