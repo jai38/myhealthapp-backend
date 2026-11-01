@@ -155,6 +155,25 @@ export class DocumentService {
   }
 
   /**
+   * Hard-deletes every document belonging to the patient profile AND purges all
+   * associated S3 objects under "documents/<profileId>/". Used by G1 account deletion.
+   * Does not touch other tenants' data (defense-in-depth through storage key validation).
+   */
+  async purgeByPatientProfile(patientProfileId: string): Promise<number> {
+    const docs = await this.docRepository.listByPatient(patientProfileId);
+
+    // Always purge the whole prefix, not just keys that have a document row: abandoned or
+    // rejected upload-intent objects live under the same prefix and are patient data too.
+    await this.storageProvider.deleteByPrefix(`documents/${patientProfileId}/`, patientProfileId);
+
+    await Promise.all(
+      docs.map((doc) => this.docRepository.delete(doc.id))
+    );
+
+    return docs.length;
+  }
+
+  /**
    * Hard-deletes a document and deletes the underlying object in storage.
    */
   async deleteDocument(patientProfileId: string, documentId: string): Promise<void> {

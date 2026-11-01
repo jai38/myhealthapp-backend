@@ -66,16 +66,20 @@ enum MedicationStatus {
 }
 
 model User {
-  id            String        @id @default(uuid()) @db.Uuid
-  email         String        @unique
-  passwordHash  String?       @map("password_hash")
-  authProvider  AuthProvider  @default(EMAIL) @map("auth_provider")
-  isVerified    Boolean       @default(false) @map("is_verified")
-  createdAt     DateTime      @default(now()) @map("created_at")
-  updatedAt     DateTime      @updatedAt @map("updated_at")
+  id           String       @id @default(uuid()) @db.Uuid
+  email        String       @unique
+  passwordHash String?      @map("password_hash")
+  passwordChangedAt DateTime? @map("password_changed_at")
+  authProvider AuthProvider @default(EMAIL) @map("auth_provider")
+  isVerified   Boolean      @default(false) @map("is_verified")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
 
-  patientProfile         PatientProfile?
-  confirmedPrescriptions Prescription[] @relation("ConfirmedPrescriptions")
+  patientProfile          PatientProfile?
+  confirmedPrescriptions  Prescription[]           @relation("ConfirmedPrescriptions")
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+  refreshTokens           RefreshToken[]
 
   @@map("users")
 }
@@ -91,7 +95,7 @@ model PatientProfile {
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
-  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   userPreferences UserPreferences?
   documents       Document[]
   uploadIntents   UploadIntent[]
@@ -105,13 +109,13 @@ model PatientProfile {
 }
 
 model UserPreferences {
-  id                    String   @id @default(uuid()) @db.Uuid
-  patientProfileId      String   @unique @map("patient_profile_id") @db.Uuid
-  preferredTimezone     String   @default("Asia/Kolkata") @map("preferred_timezone")
-  notificationsEnabled  Boolean  @default(true) @map("notifications_enabled")
-  dailySummaryTime      String?  @map("daily_summary_time")
-  createdAt             DateTime @default(now()) @map("created_at")
-  updatedAt             DateTime @updatedAt @map("updated_at")
+  id                   String   @id @default(uuid()) @db.Uuid
+  patientProfileId     String   @unique @map("patient_profile_id") @db.Uuid
+  preferredTimezone    String   @default("Asia/Kolkata") @map("preferred_timezone")
+  notificationsEnabled Boolean  @default(true) @map("notifications_enabled")
+  dailySummaryTime     String?  @map("daily_summary_time")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
 
   patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
 
@@ -323,4 +327,60 @@ model DoseLog {
   @@unique([medicationId, scheduledTime])
   @@index([patientProfileId, scheduledTime])
   @@map("dose_logs")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  familyId  String    @map("family_id") @db.Uuid
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+// Audit trail: IDs, action codes and timestamps only (no PHI, no IP, no free text).
+// user_id deliberately has no foreign key so the record survives account deletion.
+model AuditEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("audit_events")
 }

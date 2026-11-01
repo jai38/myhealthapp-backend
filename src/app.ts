@@ -98,7 +98,9 @@ export const createApp = (options?: AppOptions): Express => {
 
   const authAdapter =
     options?.authAdapter ??
-    (env.AUTH_PROVIDER === 'node-internal'
+    // Tests always default to the mock adapter so a developer's local AUTH_PROVIDER can never
+    // route a test run into a real database.
+    (env.AUTH_PROVIDER === 'node-internal' && process.env.NODE_ENV !== 'test'
       ? new DatabaseAuthProviderAdapter(getPrismaClient())
       : new MockAuthProviderAdapter());
 
@@ -216,7 +218,9 @@ export const createApp = (options?: AppOptions): Express => {
 
   app.use(
     `${env.API_PREFIX}/auth`,
-    createAuthRouter(authAdapter, authMiddleware)
+    createAuthRouter(authAdapter, authMiddleware, {
+      purgePatientData: (patientProfileId) => documentService.purgeByPatientProfile(patientProfileId),
+    })
   );
 
   // Module routers mounted under API_PREFIX

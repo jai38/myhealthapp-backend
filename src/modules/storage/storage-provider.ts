@@ -4,7 +4,9 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
@@ -53,11 +55,22 @@ export interface StorageProvider {
   getDownloadSignedUrl(storageKey: string, patientProfileId: string): Promise<string>;
   getObjectBuffer(storageKey: string, patientProfileId: string): Promise<Buffer>;
   deleteObject(storageKey: string, patientProfileId: string): Promise<void>;
+  deleteByPrefix(prefix: string, patientProfileId: string): Promise<void>;
   checkObjectExists(storageKey: string, patientProfileId: string): Promise<{ exists: boolean; sizeBytes?: number }>;
   putObject(storageKey: string, patientProfileId: string, buffer: Buffer, mimeType: string): Promise<void>;
 }
 
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'application/pdf']);
+
+/**
+ * A bulk-delete prefix must be exactly "documents/<patientProfileId>/" for the caller's own profile.
+ * Rejects empty or path-like profile ids so the prefix can never widen to another tenant.
+ */
+function assertOwnPrefix(prefix: string, patientProfileId: string): void {
+  if (!patientProfileId || /[\/\\.]/.test(patientProfileId) || prefix !== `documents/${patientProfileId}/`) {
+    throw new Error('Forbidden: Prefix does not belong to the authenticated patient profile');
+  }
+}
 
 /**
  * Validates that storageKey strictly follows the format:
@@ -367,6 +380,45 @@ export class S3StorageProvider implements StorageProvider {
     await this.s3Client.send(command);
   }
 
+  /**
+   * Deletes every object under a given prefix (e.g. "documents/<patientProfileId>/").
+   * Used for account deletion. The prefix is validated against the owning
+   * patientProfileId so a caller can never purge another tenant's objects.
+   */
+  async deleteByPrefix(prefix: string, patientProfileId: string): Promise<void> {
+    assertOwnPrefix(prefix, patientProfileId);
+
+    let continuationToken: string | undefined;
+    do {
+      const listResponse = await this.s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        })
+      );
+
+      const objects = (listResponse.Contents || [])
+        .map(({ Key }) => Key)
+        .filter((key): key is string => Boolean(key));
+
+      if (objects.length > 0) {
+        const deleted = await this.s3Client.send(
+          new DeleteObjectsCommand({
+            Bucket: this.bucket,
+            Delete: { Objects: objects.map((Key) => ({ Key })), Quiet: true },
+          })
+        );
+        if (deleted.Errors && deleted.Errors.length > 0) {
+          // Fail closed so account deletion is not reported as complete with objects left behind.
+          throw new Error(`Failed to delete ${deleted.Errors.length} stored object(s)`);
+        }
+      }
+
+      continuationToken = listResponse.IsTruncated ? listResponse.NextContinuationToken : undefined;
+    } while (continuationToken);
+  }
+
   async putObject(storageKey: string, patientProfileId: string, buffer: Buffer, mimeType: string): Promise<void> {
     validateStorageKey(storageKey, patientProfileId);
 
@@ -575,6 +627,20 @@ export class MemoryStorageProvider implements StorageProvider {
   async deleteObject(storageKey: string, patientProfileId: string): Promise<void> {
     validateStorageKey(storageKey, patientProfileId);
     this.objects.delete(storageKey);
+  }
+
+  /**
+   * Deletes every object under a given prefix (e.g. "documents/<patientProfileId>/").
+   * Mirrors the S3 provider's behaviour for the in-memory test double.
+   */
+  async deleteByPrefix(prefix: string, patientProfileId: string): Promise<void> {
+    assertOwnPrefix(prefix, patientProfileId);
+
+    for (const key of Array.from(this.objects.keys())) {
+      if (key.startsWith(prefix)) {
+        this.objects.delete(key);
+      }
+    }
   }
 
   async putObject(storageKey: string, patientProfileId: string, buffer: Buffer, mimeType: string): Promise<void> {

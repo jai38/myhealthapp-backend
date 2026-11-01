@@ -16,6 +16,11 @@ const envSchema = z.object({
   CLIENT_URL: z.string().default('http://localhost:8081'),
   GEMINI_API_KEY: z.string().optional(),
   AI_EXTRACTION_PROVIDER: z.string().default('auto'),
+  AI_PROVIDER_APPROVED: z.string().default('false').transform((v) => v === 'true'),
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().default('My Health App <no-reply@myhealthapp.com>'),
+  // Base URL of the web/app client used in emailed links. Falls back to CLIENT_URL (never '*').
+  APP_BASE_URL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -93,6 +98,21 @@ export function validateProductionConfig(config: typeof env = env): void {
     }
   }
 
+  // 5. AI provider approval check
+  if (config.AI_EXTRACTION_PROVIDER === 'gemini' && !config.AI_PROVIDER_APPROVED) {
+    violations.push('AI_PROVIDER_APPROVED must be true when using Gemini as extraction provider in production. Set to true only after verifying BAA/DPA/zero-training terms with provider.');
+  }
+
+  // 6. Resend API key required for auth flows
+  if (!config.RESEND_API_KEY || config.RESEND_API_KEY.trim() === '') {
+    violations.push('RESEND_API_KEY is required in production for password reset and email verification emails.');
+  }
+
+  // 7. Emailed links need a concrete base URL (CLIENT_URL may be '*' for CORS)
+  const linkBase = config.APP_BASE_URL ?? config.CLIENT_URL;
+  if (!linkBase || linkBase.trim() === '' || linkBase.includes('*') || linkBase.includes('localhost')) {
+    violations.push('APP_BASE_URL must be a concrete https URL in production (used in verification and password reset links).');
+  }
   if (violations.length > 0) {
     // Print configuration variable names only - NEVER values, secrets, or patient data
     const message = `[FATAL] Production startup refused due to security configuration violations:\n${violations.map((v) => `  - ${v}`).join('\n')}`;
