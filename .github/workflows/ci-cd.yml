@@ -38,7 +38,7 @@ jobs:
           --health-retries 10
 
       minio:
-        image: minio/minio:latest
+        image: pgsty/minio:latest
         env:
           MINIO_ROOT_USER: minioadmin
           MINIO_ROOT_PASSWORD: minioadminpassword
