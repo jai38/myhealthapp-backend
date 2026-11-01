@@ -37,14 +37,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
 
-      minio:
-        image: pgsty/minio:latest
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadminpassword
-        ports:
-          - 9000:9000
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -67,21 +59,20 @@ jobs:
       - name: Apply Database Migrations
         run: npx prisma migrate deploy
 
-      - name: Wait for MinIO and create bucket
-        env:
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadminpassword
-          AWS_DEFAULT_REGION: us-east-1
+      - name: Start MinIO with the test bucket
         run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadminpassword \
+            --entrypoint /bin/sh pgsty/minio:latest \
+            -c "mkdir -p /data/myhealthapp-documents && minio server /data"
           for i in $(seq 1 30); do
             if curl -fs http://localhost:9000/minio/health/live > /dev/null; then
-              break
+              exit 0
             fi
             sleep 2
           done
-          curl -fs http://localhost:9000/minio/health/live > /dev/null
-          aws --endpoint-url http://localhost:9000 s3api head-bucket --bucket myhealthapp-documents 2>/dev/null \
-            || aws --endpoint-url http://localhost:9000 s3api create-bucket --bucket myhealthapp-documents
+          docker logs minio
+          exit 1
 
       - name: Run Automated Test Suite
         run: npm test
