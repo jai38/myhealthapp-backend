@@ -41,7 +41,7 @@ function isPortOpen(host: string, port: number, timeoutMs = 800): Promise<boolea
   });
 }
 
-const isPostgresAvailable = await isPortOpen('localhost', 5432, 800);
+const isPostgresAvailable = await isPortOpen('localhost', 5433, 800);
 const isMinioAvailable = await isPortOpen('localhost', 9000, 800);
 
 describe.skipIf(!isPostgresAvailable || !isMinioAvailable)(

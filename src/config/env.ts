@@ -7,7 +7,7 @@ const envSchema = z.object({
   PORT: z.string().default('4000').transform((val) => parseInt(val, 10)),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PREFIX: z.string().default('/api/v1'),
-  DATABASE_URL: z.string().default('postgresql://healthuser:healthpassword@localhost:5432/myhealthapp_dev?schema=public'),
+  DATABASE_URL: z.string().default('postgresql://healthuser:healthpassword@localhost:5433/myhealthapp_dev?schema=public'),
   AUTH_PROVIDER: z.enum(['mock', 'supabase', 'node-internal']).default(
     process.env.NODE_ENV === 'production' ? 'node-internal' : 'mock'
   ),
@@ -63,7 +63,7 @@ export function validateProductionConfig(config: typeof env = env): void {
   if (
     !config.DATABASE_URL ||
     config.DATABASE_URL.includes('healthpassword') ||
-    config.DATABASE_URL.includes('localhost:5432')
+    /@(localhost|127\.0\.0\.1)[:/]/.test(config.DATABASE_URL)
   ) {
     violations.push('DATABASE_URL cannot use default development credentials or local development host in production.');
   }

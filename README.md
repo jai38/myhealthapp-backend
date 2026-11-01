@@ -23,7 +23,7 @@ npm install
 docker compose up -d
 ```
 Starts:
-- **PostgreSQL 16:** Available on `localhost:5432` (`myhealthapp_dev` database).
+- **PostgreSQL 16:** Available on `localhost:5433` (`myhealthapp_dev` database).
 - **MinIO S3:** Available on `localhost:9000` (API) and `localhost:9001` (Web Console).
 
 ### 3. Run Automated Tests & Type Checking

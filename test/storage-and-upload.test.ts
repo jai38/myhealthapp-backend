@@ -512,6 +512,20 @@ describe('Storage, Document Upload Security & Integrity', () => {
         CLIENT_URL: 'https://myhealthapp.com',
       } as any);
     }).toThrow(/DATABASE_URL cannot use default development credentials/);
+
+    // 4. Refuse a local database on any port, even with other credentials
+    expect(() => {
+      validateProductionConfig({
+        PORT: 4000,
+        NODE_ENV: 'production',
+        API_PREFIX: '/api/v1',
+        DATABASE_URL: 'postgresql://someuser:somepassword@localhost:5433/somedb',
+        AUTH_PROVIDER: 'supabase',
+        JWT_SECRET: 'a-very-long-production-jwt-secret-with-plenty-of-entropy-32chars',
+        JWT_EXPIRES_IN: '15m',
+        CLIENT_URL: 'https://myhealthapp.com',
+      } as any);
+    }).toThrow(/DATABASE_URL cannot use default development credentials/);
   });
 });
 
