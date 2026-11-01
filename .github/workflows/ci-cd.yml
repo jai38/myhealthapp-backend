@@ -18,6 +18,33 @@ jobs:
     name: Test & Validate
     runs-on: ubuntu-latest
 
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://healthuser:healthpassword@localhost:5433/myhealthapp_dev
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: healthuser
+          POSTGRES_PASSWORD: healthpassword
+          POSTGRES_DB: myhealthapp_dev
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U healthuser -d myhealthapp_dev"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadminpassword
+        ports:
+          - 9000:9000
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -36,6 +63,25 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Apply Database Migrations
+        run: npx prisma migrate deploy
+
+      - name: Wait for MinIO and create bucket
+        env:
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadminpassword
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fs http://localhost:9000/minio/health/live > /dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fs http://localhost:9000/minio/health/live > /dev/null
+          aws --endpoint-url http://localhost:9000 s3api head-bucket --bucket myhealthapp-documents 2>/dev/null \
+            || aws --endpoint-url http://localhost:9000 s3api create-bucket --bucket myhealthapp-documents
 
       - name: Run Automated Test Suite
         run: npm test

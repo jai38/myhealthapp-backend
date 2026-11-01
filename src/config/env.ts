@@ -21,6 +21,8 @@ const envSchema = z.object({
   EMAIL_FROM: z.string().default('My Health App <no-reply@myhealthapp.com>'),
   // Base URL of the web/app client used in emailed links. Falls back to CLIENT_URL (never '*').
   APP_BASE_URL: z.string().optional(),
+  // Temporary: set to false until the app has verification screens (Phase 5).
+  EMAIL_VERIFICATION_REQUIRED: z.string().default('true').transform((v) => v !== 'false'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -103,15 +105,17 @@ export function validateProductionConfig(config: typeof env = env): void {
     violations.push('AI_PROVIDER_APPROVED must be true when using Gemini as extraction provider in production. Set to true only after verifying BAA/DPA/zero-training terms with provider.');
   }
 
-  // 6. Resend API key required for auth flows
-  if (!config.RESEND_API_KEY || config.RESEND_API_KEY.trim() === '') {
-    violations.push('RESEND_API_KEY is required in production for password reset and email verification emails.');
-  }
+  if (config.EMAIL_VERIFICATION_REQUIRED !== false) {
+    // 6. Resend API key required for auth flows
+    if (!config.RESEND_API_KEY || config.RESEND_API_KEY.trim() === '') {
+      violations.push('RESEND_API_KEY is required in production for password reset and email verification emails.');
+    }
 
-  // 7. Emailed links need a concrete base URL (CLIENT_URL may be '*' for CORS)
-  const linkBase = config.APP_BASE_URL ?? config.CLIENT_URL;
-  if (!linkBase || linkBase.trim() === '' || linkBase.includes('*') || linkBase.includes('localhost')) {
-    violations.push('APP_BASE_URL must be a concrete https URL in production (used in verification and password reset links).');
+    // 7. Emailed links need a concrete base URL (CLIENT_URL may be '*' for CORS)
+    const linkBase = config.APP_BASE_URL ?? config.CLIENT_URL;
+    if (!linkBase || linkBase.trim() === '' || linkBase.includes('*') || linkBase.includes('localhost')) {
+      violations.push('APP_BASE_URL must be a concrete https URL in production (used in verification and password reset links).');
+    }
   }
   if (violations.length > 0) {
     // Print configuration variable names only - NEVER values, secrets, or patient data

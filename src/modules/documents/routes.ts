@@ -48,7 +48,7 @@ export function createDocumentRouter(documentService: DocumentService): Router {
   router.post('/confirm-upload', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { storageKey, mimeType, clientChecksum } = req.body;
-      if (!storageKey) {
+      if (!storageKey || typeof storageKey !== 'string') {
         res.status(400).json({
           error: { code: 'BAD_REQUEST', message: 'storageKey is required' },
         });

@@ -178,6 +178,7 @@ export class DatabaseAuthProviderAdapter implements AuthProviderAdapter {
   constructor(
     private prisma: PrismaClient,
     private emailSender: EmailSender = createEmailSender(),
+    private requireEmailVerification: boolean = env.EMAIL_VERIFICATION_REQUIRED,
   ) {}
 
   // -- sign-up / verification ------------------------------------------------
@@ -196,7 +197,7 @@ export class DatabaseAuthProviderAdapter implements AuthProviderAdapter {
             email: normalizedEmail,
             passwordHash,
             authProvider: 'EMAIL',
-            isVerified: false,
+            isVerified: !this.requireEmailVerification,
           },
         });
 
@@ -208,17 +209,29 @@ export class DatabaseAuthProviderAdapter implements AuthProviderAdapter {
           },
         });
 
-        await tx.emailVerificationToken.create({
-          data: {
-            userId: user.id,
-            tokenHash: hashToken(verificationToken),
-            expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
-          },
-        });
+        if (this.requireEmailVerification) {
+          await tx.emailVerificationToken.create({
+            data: {
+              userId: user.id,
+              tokenHash: hashToken(verificationToken),
+              expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS),
+            },
+          });
+        }
 
         await this.audit(tx, user.id, 'USER_SIGNED_UP', 'USER', user.id);
         return { user, profile };
       });
+
+      if (!this.requireEmailVerification) {
+        const session = await this.issueSession(this.prisma, result.user.id, result.user.email, result.profile.id, crypto.randomUUID());
+        return {
+          userId: result.user.id,
+          patientProfileId: result.profile.id,
+          session,
+          requiresVerification: false,
+        };
+      }
 
       this.sendInBackground(() => this.emailSender.sendVerificationEmail(normalizedEmail, verificationToken));
 

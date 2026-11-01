@@ -15,6 +15,10 @@ services:
         value: "/api/v1"
       - key: AUTH_PROVIDER
         value: "node-internal"
+      - key: EMAIL_VERIFICATION_REQUIRED # Temporary, until the app has verification screens (Phase 5)
+        value: "false"
+      - key: AI_PROVIDER_APPROVED # Owner accepted for test data only; provider is replaced in Phase 2
+        value: "true"
       - key: CLIENT_URL
         value: "*"
       - key: DATABASE_URL

@@ -140,6 +140,18 @@ describe('DatabaseAuthProviderAdapter (auth flows, fake Prisma)', () => {
   });
 
   describe('email verification', () => {
+    it('signup returns a session only when verification is explicitly turned off', async () => {
+      const fake = createFakePrisma();
+      const bridgeApp = createApp({
+        authAdapter: new DatabaseAuthProviderAdapter(fake.client, sender, false),
+      });
+      const signup = await request(bridgeApp).post('/api/v1/auth/signup').send({ email: 'bridge@example.com', password: PASSWORD });
+      expect(signup.status).toBe(201);
+      expect(signup.body.data.requiresVerification).toBe(false);
+      expect(signup.body.data.session.accessToken).toBeTruthy();
+      expect(fake.tables.emailVerificationToken).toHaveLength(0);
+    });
+
     it('signup issues no session and login is blocked until the email is verified', async () => {
       const signup = await request(app).post('/api/v1/auth/signup').send({ email: 'new@example.com', password: PASSWORD });
       expect(signup.status).toBe(201);
