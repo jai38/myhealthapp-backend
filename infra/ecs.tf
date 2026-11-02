@@ -211,12 +211,17 @@ resource "aws_service_discovery_private_dns_namespace" "main" {
 resource "aws_service_discovery_service" "api" {
   name = "api"
 
+  # Lets Terraform replace or remove the service while ECS still has tasks registered in it.
+  force_destroy = true
+
   dns_config {
     namespace_id   = aws_service_discovery_private_dns_namespace.main.id
     routing_policy = "MULTIVALUE"
 
+    # SRV, not A: API Gateway reads the port from the Cloud Map instance, and ECS records it only for SRV.
+    # With A records the private integration has no port and every request returns 500.
     dns_records {
-      type = "A"
+      type = "SRV"
       ttl  = 10
     }
   }
@@ -249,7 +254,9 @@ resource "aws_ecs_service" "api" {
   }
 
   service_registries {
-    registry_arn = aws_service_discovery_service.api.arn
+    registry_arn   = aws_service_discovery_service.api.arn
+    container_name = "api"
+    container_port = local.api_container_port
   }
 
   lifecycle {
