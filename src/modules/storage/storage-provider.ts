@@ -10,6 +10,11 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
+  validateStorageKey,
+  readStreamBounded,
+  resolveS3ClientConfig,
+} from './storage-keys.js';
+import {
   validateDocumentContent,
   DocumentValidationResult,
   MAX_FILE_SIZE_BYTES,
@@ -60,6 +65,9 @@ export interface StorageProvider {
   putObject(storageKey: string, patientProfileId: string, buffer: Buffer, mimeType: string): Promise<void>;
 }
 
+export { validateStorageKey, resolveS3ClientConfig } from './storage-keys.js';
+export type { S3ConnectionOptions } from './storage-keys.js';
+
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'application/pdf']);
 
 /**
@@ -70,53 +78,6 @@ function assertOwnPrefix(prefix: string, patientProfileId: string): void {
   if (!patientProfileId || /[\/\\.]/.test(patientProfileId) || prefix !== `documents/${patientProfileId}/`) {
     throw new Error('Forbidden: Prefix does not belong to the authenticated patient profile');
   }
-}
-
-/**
- * Validates that storageKey strictly follows the format:
- * documents/<patientProfileId>/<uuid>
- * Prevents path traversal, forged tenant IDs, and arbitrary keys.
- */
-export function validateStorageKey(storageKey: string, expectedPatientProfileId: string): void {
-  if (!storageKey || typeof storageKey !== 'string') {
-    throw new Error('Invalid storage key');
-  }
-
-  if (!expectedPatientProfileId) {
-    throw new Error('Patient profile ID is required for storage key validation');
-  }
-
-  const parts = storageKey.split('/');
-  if (parts.length !== 3 || parts[0] !== 'documents' || parts[1] !== expectedPatientProfileId) {
-    throw new Error('Forbidden: Storage key does not belong to the authenticated patient profile');
-  }
-
-  // Validate UUID segment
-  const keyUuid = parts[2];
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!keyUuid || !uuidRegex.test(keyUuid)) {
-    throw new Error('Forbidden: Storage key has an invalid format');
-  }
-}
-
-/**
- * Reads an object stream safely with a strict byte limit.
- * Prevents memory exhaustion attacks from unbounded objects.
- */
-async function readStreamBounded(stream: any, maxBytes: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-
-  for await (const chunk of stream) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    totalBytes += buf.length;
-    if (totalBytes > maxBytes) {
-      throw new Error(`Object stream exceeded maximum size of ${maxBytes} bytes`);
-    }
-    chunks.push(buf);
-  }
-
-  return Buffer.concat(chunks, totalBytes);
 }
 
 /**
@@ -141,21 +102,9 @@ export class S3StorageProvider implements StorageProvider {
       useSsl?: boolean;
     }
   ) {
-    const endpoint = options?.endpoint || process.env.STORAGE_ENDPOINT || 'http://localhost:9000';
-    const region = options?.region || process.env.STORAGE_REGION || 'us-east-1';
-    this.bucket = options?.bucket || process.env.STORAGE_BUCKET || 'myhealthapp-documents';
-    const accessKeyId = options?.accessKeyId || process.env.STORAGE_ACCESS_KEY || 'minioadmin';
-    const secretAccessKey = options?.secretAccessKey || process.env.STORAGE_SECRET_KEY || 'minioadminpassword';
-
-    this.s3Client = new S3Client({
-      endpoint,
-      region,
-      credentials: {
-        accessKeyId,
-        secretAccessKey,
-      },
-      forcePathStyle: true, // Required for MinIO and local S3 emulators
-    });
+    const resolved = resolveS3ClientConfig(options);
+    this.bucket = resolved.bucket;
+    this.s3Client = new S3Client(resolved.clientConfig);
   }
 
   async createUploadIntent(request: UploadIntentRequest): Promise<UploadIntentResponse> {

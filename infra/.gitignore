@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfstate.d/
+*.tfplan
+crash.log
+# Local overrides that may hold real values
+*.auto.tfvars
+override.tf
+override.tf.json

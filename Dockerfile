@@ -1,5 +1,5 @@
 # Multi-stage production build for My Health App Backend
-# Optimized for Render Free Tier (low memory footprint, fast startup)
+# Small footprint, fast startup. Runs on ECS Fargate (ARM) and on Render.
 
 FROM node:22-alpine AS builder
 
@@ -51,5 +51,8 @@ USER expressuser
 
 EXPOSE 4000
 
-# Run database migrations automatically before starting the server
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# The container only starts the API. Migrations are a separate step:
+#   - AWS: the deploy workflow runs the one-shot migrate task (command: prisma migrate deploy) first.
+#   - Render: render.yaml sets dockerCommand to run migrations before the server.
+# The extraction worker uses the same image with the command: node dist/worker.js
+CMD ["node", "dist/index.js"]

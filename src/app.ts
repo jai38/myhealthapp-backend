@@ -12,7 +12,11 @@ import {
 import {
   PrescriptionExtractionProvider,
   MockPrescriptionExtractionProvider,
+  QueuedExtractionProvider,
 } from './modules/ai-extraction/provider.js';
+import { ExtractionDispatcher } from './modules/ai-extraction/messages.js';
+import { SqsMessageQueue } from './modules/ai-extraction/message-queue.js';
+import { QueueExtractionDispatcher } from './modules/ai-extraction/queue-dispatcher.js';
 import { GeminiPrescriptionExtractionProvider } from './modules/ai-extraction/gemini-provider.js';
 import { DocumentService } from './modules/documents/document-service.js';
 import { ExtractionJobQueue } from './modules/ai-extraction/job-queue.js';
@@ -57,6 +61,8 @@ export interface AppOptions {
   authAdapter?: AuthProviderAdapter;
   storageProvider?: StorageProvider;
   extractionProvider?: PrescriptionExtractionProvider;
+  /** When set (or EXTRACTION_MODE=sqs), extraction runs in the worker instead of inside a request. */
+  extractionDispatcher?: ExtractionDispatcher;
   documentService?: DocumentService;
   jobQueue?: ExtractionJobQueue;
   prescriptionService?: PrescriptionService;
@@ -172,18 +178,34 @@ export const createApp = (options?: AppOptions): Express => {
 
 
   const isTest = process.env.NODE_ENV === 'test';
+
+  // Queue mode: the worker calls the provider, so the API holds no provider key and no model client.
+  const extractionDispatcher =
+    options?.extractionDispatcher ??
+    (env.EXTRACTION_MODE === 'sqs' && env.EXTRACTION_JOBS_QUEUE_URL
+      ? new QueueExtractionDispatcher(new SqsMessageQueue(env.EXTRACTION_JOBS_QUEUE_URL))
+      : undefined);
+
   const geminiApiKey = process.env.GEMINI_API_KEY || (env as any).GEMINI_API_KEY;
   const extractionProvider =
     options?.extractionProvider ??
-    (geminiApiKey && (!isTest || process.env.AI_EXTRACTION_PROVIDER === 'gemini') && (process.env.AI_EXTRACTION_PROVIDER === 'gemini' || process.env.AI_EXTRACTION_PROVIDER === 'auto' || !process.env.AI_EXTRACTION_PROVIDER)
-      ? new GeminiPrescriptionExtractionProvider(geminiApiKey)
-      : new MockPrescriptionExtractionProvider());
+    (extractionDispatcher
+      ? new QueuedExtractionProvider(`gemini-${process.env.GEMINI_MODEL || 'gemini-2.5-flash'}`)
+      : geminiApiKey && (!isTest || process.env.AI_EXTRACTION_PROVIDER === 'gemini') && (process.env.AI_EXTRACTION_PROVIDER === 'gemini' || process.env.AI_EXTRACTION_PROVIDER === 'auto' || !process.env.AI_EXTRACTION_PROVIDER)
+        ? new GeminiPrescriptionExtractionProvider(geminiApiKey)
+        : new MockPrescriptionExtractionProvider());
 
   const documentService =
     options?.documentService ?? new DocumentService(storageProvider, docRepo);
 
   const jobQueue =
-    options?.jobQueue ?? new ExtractionJobQueue(extractionProvider, documentService, jobRepo);
+    options?.jobQueue ??
+    new ExtractionJobQueue(extractionProvider, documentService, jobRepo, {
+      dispatcher: extractionDispatcher,
+    });
+
+  // Exposed so index.ts can attach the worker-result consumer without a second wiring path.
+  app.locals.extractionJobQueue = jobQueue;
 
   const prescriptionService =
     options?.prescriptionService ?? new PrescriptionService(prescriptionRepo);

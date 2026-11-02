@@ -17,8 +17,23 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   AI_EXTRACTION_PROVIDER: z.string().default('auto'),
   AI_PROVIDER_APPROVED: z.string().default('false').transform((v) => v === 'true'),
-  RESEND_API_KEY: z.string().optional(),
-  EMAIL_FROM: z.string().default('My Health App <no-reply@myhealthapp.com>'),
+  // 'ses' sends through Amazon SES using the task role; 'memory' keeps mail in an in-process outbox (local/tests).
+  EMAIL_PROVIDER: z.enum(['memory', 'ses']).default('memory'),
+  // Must be an SES-verified sender. No default in production so a placeholder address is never used.
+  EMAIL_FROM: z.string().optional(),
+  SES_REGION: z.string().optional(),
+  // 'inline' runs extraction inside the API process (local, tests, Render). 'sqs' hands it to the separate worker.
+  EXTRACTION_MODE: z.enum(['inline', 'sqs']).default('inline'),
+  EXTRACTION_JOBS_QUEUE_URL: z.string().optional(),
+  EXTRACTION_RESULTS_QUEUE_URL: z.string().optional(),
+  // Per-process Prisma pool size. Production defaults to 5 (see getPrismaClient); unset elsewhere.
+  DB_CONNECTION_LIMIT: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v.trim() === '' ? undefined : parseInt(v, 10)))
+    .refine((v) => v === undefined || (Number.isInteger(v) && v >= 1 && v <= 50), {
+      message: 'DB_CONNECTION_LIMIT must be an integer between 1 and 50',
+    }),
   // Base URL of the web/app client used in emailed links. Falls back to CLIENT_URL (never '*').
   APP_BASE_URL: z.string().optional(),
   // Temporary: set to false until the app has verification screens (Phase 5).
@@ -35,11 +50,16 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 
+const LOCAL_ENDPOINT_PATTERN = /(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i;
+
 /**
  * Validates that production environments fail closed if insecure defaults or mock providers are configured.
  * Does NOT print secret values or connection strings in error messages.
  */
-export function validateProductionConfig(config: typeof env = env): void {
+export function validateProductionConfig(
+  config: typeof env = env,
+  processEnv: Record<string, string | undefined> = process.env,
+): void {
   if (config.NODE_ENV !== 'production') {
     return;
   }
@@ -71,14 +91,14 @@ export function validateProductionConfig(config: typeof env = env): void {
   }
 
   // 4. Validate storage configuration
-  const storageProvider = process.env.STORAGE_PROVIDER;
-  const storageEndpoint = process.env.STORAGE_ENDPOINT;
-  const storageBucket = process.env.STORAGE_BUCKET;
-  const storageAccessKey = process.env.STORAGE_ACCESS_KEY;
-  const storageSecretKey = process.env.STORAGE_SECRET_KEY;
+  const storageProvider = processEnv.STORAGE_PROVIDER;
+  const storageEndpoint = processEnv.STORAGE_ENDPOINT?.trim();
+  const storageBucket = processEnv.STORAGE_BUCKET;
+  const storageAccessKey = processEnv.STORAGE_ACCESS_KEY?.trim();
+  const storageSecretKey = processEnv.STORAGE_SECRET_KEY?.trim();
 
   if (storageProvider === 'memory') {
-    if (process.env.ALLOW_EPHEMERAL_STORAGE !== 'true') {
+    if (processEnv.ALLOW_EPHEMERAL_STORAGE !== 'true') {
       violations.push('STORAGE_PROVIDER cannot be set to "memory" in production. Persistent S3-compatible storage is required (or set ALLOW_EPHEMERAL_STORAGE=true for beta testing).');
     }
   } else {
@@ -86,17 +106,24 @@ export function validateProductionConfig(config: typeof env = env): void {
       violations.push('STORAGE_BUCKET is required in production when using S3 storage.');
     }
 
-    if (
-      !storageAccessKey ||
-      storageAccessKey === 'minioadmin' ||
-      !storageSecretKey ||
-      storageSecretKey === 'minioadminpassword'
-    ) {
-      violations.push('Storage credentials cannot use default development credentials in production.');
+    // The endpoint is optional: unset means real AWS S3 reached through the task role.
+    // When it is set (a non-AWS S3-compatible store), it must be a remote https URL.
+    if (storageEndpoint) {
+      if (LOCAL_ENDPOINT_PATTERN.test(storageEndpoint) || !storageEndpoint.startsWith('https://')) {
+        violations.push('STORAGE_ENDPOINT must be a remote https URL in production; local or plain-http endpoints are refused.');
+      }
     }
 
-    if (!storageEndpoint || storageEndpoint.includes('localhost:9000')) {
-      violations.push('STORAGE_ENDPOINT cannot use local development MinIO in production.');
+    const hasAccessKey = Boolean(storageAccessKey);
+    const hasSecretKey = Boolean(storageSecretKey);
+    if (hasAccessKey !== hasSecretKey) {
+      violations.push('STORAGE_ACCESS_KEY and STORAGE_SECRET_KEY must be set together, or both left unset to use the task role.');
+    }
+    if (storageAccessKey === 'minioadmin' || storageSecretKey === 'minioadminpassword') {
+      violations.push('Storage credentials cannot use default development credentials in production.');
+    }
+    if (storageEndpoint && !(hasAccessKey && hasSecretKey)) {
+      violations.push('Storage credentials are required in production when STORAGE_ENDPOINT is set.');
     }
   }
 
@@ -106,9 +133,12 @@ export function validateProductionConfig(config: typeof env = env): void {
   }
 
   if (config.EMAIL_VERIFICATION_REQUIRED !== false) {
-    // 6. Resend API key required for auth flows
-    if (!config.RESEND_API_KEY || config.RESEND_API_KEY.trim() === '') {
-      violations.push('RESEND_API_KEY is required in production for password reset and email verification emails.');
+    // 6. A real sender is required for auth flows
+    if (config.EMAIL_PROVIDER !== 'ses') {
+      violations.push('EMAIL_PROVIDER must be "ses" in production for password reset and email verification emails.');
+    }
+    if (!config.EMAIL_FROM || config.EMAIL_FROM.trim() === '') {
+      violations.push('EMAIL_FROM must be set to an SES-verified sender in production.');
     }
 
     // 7. Emailed links need a concrete base URL (CLIENT_URL may be '*' for CORS)
@@ -117,6 +147,19 @@ export function validateProductionConfig(config: typeof env = env): void {
       violations.push('APP_BASE_URL must be a concrete https URL in production (used in verification and password reset links).');
     }
   }
+
+  // 8. Queue-backed extraction needs both queue URLs, and they must be real AWS queues
+  if (config.EXTRACTION_MODE === 'sqs') {
+    for (const [name, value] of [
+      ['EXTRACTION_JOBS_QUEUE_URL', config.EXTRACTION_JOBS_QUEUE_URL],
+      ['EXTRACTION_RESULTS_QUEUE_URL', config.EXTRACTION_RESULTS_QUEUE_URL],
+    ] as const) {
+      if (!value || !/^https:\/\/sqs\.[a-z0-9-]+\.amazonaws\.com\//.test(value)) {
+        violations.push(`${name} must be an https Amazon SQS queue URL when EXTRACTION_MODE is "sqs".`);
+      }
+    }
+  }
+
   if (violations.length > 0) {
     // Print configuration variable names only - NEVER values, secrets, or patient data
     const message = `[FATAL] Production startup refused due to security configuration violations:\n${violations.map((v) => `  - ${v}`).join('\n')}`;

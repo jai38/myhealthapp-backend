@@ -126,7 +126,7 @@ export class GeminiPrescriptionExtractionProvider implements PrescriptionExtract
   }
 
   async extractPrescription(input: PrescriptionExtractionInput): Promise<ExtractedPrescriptionPayload> {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent`;
 
     const promptText = `You are an expert clinical prescription parser and medical OCR system.
 Analyze the provided medical prescription document (handwritten or typed, clinic slip, hospital letterhead, discharge summary, or e-prescription) and extract all clinical details accurately.
@@ -186,6 +186,7 @@ Important:
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-goog-api-key': this.apiKey,
       },
       body: JSON.stringify(requestBody),
     });

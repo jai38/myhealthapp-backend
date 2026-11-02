@@ -1,0 +1,140 @@
+name: Deploy to AWS (ECS)
+
+# Inactive until cutover: manual trigger only. No push or pull request trigger.
+# The existing Render deploy in ci-cd.yml stays as it is until cutover.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC token for the AWS role; no long-lived AWS keys are stored in GitHub
+  contents: read
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+env:
+  # Non-secret values, set as repository variables (Settings > Secrets and variables > Actions > Variables).
+  # infra/README.md lists the Terraform outputs to copy into each one.
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_API_SERVICE: ${{ vars.ECS_API_SERVICE }}
+  ECS_WORKER_SERVICE: ${{ vars.ECS_WORKER_SERVICE }}
+  ECS_API_FAMILY: ${{ vars.ECS_API_FAMILY }}
+  ECS_WORKER_FAMILY: ${{ vars.ECS_WORKER_FAMILY }}
+  ECS_MIGRATE_FAMILY: ${{ vars.ECS_MIGRATE_FAMILY }}
+  MIGRATE_SUBNETS: ${{ vars.MIGRATE_SUBNETS }} # comma-separated subnet ids
+  MIGRATE_SECURITY_GROUP: ${{ vars.MIGRATE_SECURITY_GROUP }}
+  API_HEALTH_URL: ${{ vars.API_HEALTH_URL }}
+
+jobs:
+  test:
+    name: Test & Validate
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://healthuser:healthpassword@localhost:5433/myhealthapp_dev
+      STORAGE_PROVIDER: memory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  deploy:
+    name: Build, migrate, deploy
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU and Buildx (ARM image on an x86 runner)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the ARM image
+        id: image
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          docker buildx build --platform linux/arm64 --push -t "$IMAGE" .
+          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Register new task definition revisions with the image
+        id: taskdefs
+        run: |
+          set -euo pipefail
+          register() {
+            family="$1"
+            aws ecs describe-task-definition --task-definition "$family" --query taskDefinition \
+              | jq --arg image "${{ steps.image.outputs.uri }}" '
+                  del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+                  | .containerDefinitions[0].image = $image' > "/tmp/${family}.json"
+            aws ecs register-task-definition --cli-input-json "file:///tmp/${family}.json" \
+              --query taskDefinition.taskDefinitionArn --output text
+          }
+          echo "migrate=$(register "$ECS_MIGRATE_FAMILY")" >> "$GITHUB_OUTPUT"
+          echo "api=$(register "$ECS_API_FAMILY")" >> "$GITHUB_OUTPUT"
+          echo "worker=$(register "$ECS_WORKER_FAMILY")" >> "$GITHUB_OUTPUT"
+
+      - name: Run database migrations (one task, before any service update)
+        run: |
+          set -euo pipefail
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "${{ steps.taskdefs.outputs.migrate }}" \
+            --network-configuration "awsvpcConfiguration={subnets=[${MIGRATE_SUBNETS}],securityGroups=[${MIGRATE_SECURITY_GROUP}],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Migration task started"
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Migration task failed with exit code ${EXIT_CODE}. See the migrate log group in CloudWatch."
+            exit 1
+          fi
+          echo "Migrations applied"
+
+      - name: Update services
+        run: |
+          set -euo pipefail
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_API_SERVICE"             --task-definition "${{ steps.taskdefs.outputs.api }}" > /dev/null
+          # The worker's desired count belongs to the queue-depth scaling; only the image changes.
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_WORKER_SERVICE"             --task-definition "${{ steps.taskdefs.outputs.worker }}" > /dev/null
+
+      - name: Wait for the API to be stable
+        run: aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_API_SERVICE"
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS "$API_HEALTH_URL" > /dev/null; then
+              echo "Healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Health check failed"
+          exit 1

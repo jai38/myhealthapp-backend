@@ -5,6 +5,8 @@ services:
     plan: free
     region: singapore
     dockerfilePath: ./Dockerfile
+    # The image no longer migrates on boot, so Render keeps doing it here until cutover.
+    dockerCommand: sh -c "prisma migrate deploy && node dist/index.js"
     healthCheckPath: /healthz
     envVars:
       - key: NODE_ENV

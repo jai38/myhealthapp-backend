@@ -65,7 +65,9 @@ describe('GeminiPrescriptionExtractionProvider', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [calledUrl, calledInit] = fetchMock.mock.calls[0];
     expect(calledUrl).toContain('generativelanguage.googleapis.com');
-    expect(calledUrl).toContain(`key=${fakeApiKey}`);
+    // The key travels in a header, never in the URL.
+    expect(calledUrl).not.toContain(fakeApiKey);
+    expect(calledInit.headers['x-goog-api-key']).toBe(fakeApiKey);
 
     const parsedBody = JSON.parse(calledInit.body);
     expect(parsedBody.contents[0].parts[0].inlineData.mimeType).toBe('application/pdf');

@@ -179,3 +179,15 @@ export class MockPrescriptionExtractionProvider implements PrescriptionExtractio
     return ExtractedPrescriptionPayloadSchema.parse(payload);
   }
 }
+
+/**
+ * Stand-in used by the API when extraction runs in the separate worker. It only supplies the
+ * provider name recorded on the job; the API process never calls a model itself.
+ */
+export class QueuedExtractionProvider implements PrescriptionExtractionProvider {
+  constructor(readonly providerName: string) {}
+
+  async extractPrescription(_input: PrescriptionExtractionInput): Promise<ExtractedPrescriptionPayload> {
+    throw new Error('Extraction runs in the worker; the API process does not call the provider');
+  }
+}

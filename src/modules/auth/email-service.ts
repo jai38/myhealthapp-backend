@@ -1,3 +1,4 @@
+import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { env } from '../../config/env.js';
 
 /**
@@ -22,31 +23,46 @@ export function buildPasswordResetUrl(token: string): string {
   return `${linkBase()}/reset-password?token=${encodeURIComponent(token)}`;
 }
 
+/** Minimal client surface so tests can substitute a fake without the network. */
+export interface SesLikeClient {
+  send(command: SendEmailCommand): Promise<unknown>;
+}
+
 /**
- * Sends mail through the Resend REST API (no SDK dependency).
+ * Sends mail through Amazon SES (SESv2). Credentials come from the task role; none are configured here.
  */
-export class ResendEmailSender implements EmailSender {
+export class SesEmailSender implements EmailSender {
+  private readonly client: SesLikeClient;
+
   constructor(
-    private readonly apiKey: string,
-    private readonly fromEmail: string = env.EMAIL_FROM,
+    private readonly fromEmail: string,
+    client?: SesLikeClient,
+    region: string | undefined = env.SES_REGION || process.env.AWS_REGION || 'ap-south-1',
   ) {
-    if (!apiKey) {
-      throw new Error('RESEND_API_KEY is required for ResendEmailSender');
+    if (!fromEmail || fromEmail.trim() === '') {
+      throw new Error('EMAIL_FROM is required for SesEmailSender');
     }
+    this.client = client ?? new SESv2Client({ region });
   }
 
   private async send(to: string, subject: string, html: string): Promise<void> {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ from: this.fromEmail, to: [to], subject, html }),
-    });
-    if (!res.ok) {
-      // Status only: the body may echo the recipient address.
-      throw new Error(`Email provider rejected the message (status ${res.status})`);
+    try {
+      await this.client.send(
+        new SendEmailCommand({
+          FromEmailAddress: this.fromEmail,
+          Destination: { ToAddresses: [to] },
+          Content: {
+            Simple: {
+              Subject: { Data: subject, Charset: 'UTF-8' },
+              Body: { Html: { Data: html, Charset: 'UTF-8' } },
+            },
+          },
+        }),
+      );
+    } catch (err: unknown) {
+      // Error name only: the SDK message can echo the recipient address.
+      const name = err instanceof Error ? err.name : 'UnknownError';
+      throw new Error(`Email provider rejected the message (${name})`);
     }
   }
 
@@ -85,8 +101,8 @@ export class MemoryEmailSender implements EmailSender {
 }
 
 export function createEmailSender(): EmailSender {
-  if (env.RESEND_API_KEY && env.RESEND_API_KEY.trim() !== '') {
-    return new ResendEmailSender(env.RESEND_API_KEY);
+  if (env.EMAIL_PROVIDER === 'ses') {
+    return new SesEmailSender(env.EMAIL_FROM ?? '');
   }
   return new MemoryEmailSender();
 }
