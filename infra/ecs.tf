@@ -49,9 +49,10 @@ locals {
       { name = "EXTRACTION_MODE", value = "sqs" },
       { name = "EXTRACTION_JOBS_QUEUE_URL", value = aws_sqs_queue.jobs.url },
       { name = "EXTRACTION_RESULTS_QUEUE_URL", value = aws_sqs_queue.results.url },
-      { name = "AI_EXTRACTION_PROVIDER", value = "gemini" },
+      # No AI_EXTRACTION_PROVIDER or AI_PROVIDER_APPROVED here: in queue mode the API never calls the provider.
+      # Only the worker does, and the worker enforces the approval gate. Setting provider=gemini with approval
+      # off makes validateProductionConfig refuse to start the API.
       { name = "GEMINI_MODEL", value = var.gemini_model },
-      { name = "AI_PROVIDER_APPROVED", value = tostring(var.ai_provider_approved) },
     ],
     var.ses_identity != "" && var.email_from != "" ? [
       { name = "EMAIL_PROVIDER", value = "ses" },

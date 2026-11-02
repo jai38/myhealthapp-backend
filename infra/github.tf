@@ -39,7 +39,7 @@ data "aws_iam_policy_document" "github_assume" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [for ref in var.github_allowed_refs : "repo:${var.github_repository}:ref:${ref}"]
+      values   = [for ref in var.github_allowed_refs : "${var.github_oidc_subject_prefix}:ref:${ref}"]
     }
   }
 }
@@ -66,6 +66,7 @@ data "aws_iam_policy_document" "github_deploy" {
       "ecr:BatchCheckLayerAvailability",
       "ecr:BatchGetImage",
       "ecr:CompleteLayerUpload",
+      "ecr:DescribeImages", # lets a re-run reuse the image already pushed for the commit
       "ecr:GetDownloadUrlForLayer",
       "ecr:InitiateLayerUpload",
       "ecr:PutImage",

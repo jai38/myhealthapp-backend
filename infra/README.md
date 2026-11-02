@@ -37,7 +37,11 @@ Commands are PowerShell. Run them from `myhealthapp-backend/infra` unless a step
 
 ### 1. Check tools and identity
 
+Sign in through IAM Identity Center (SSO) and point both the AWS CLI and Terraform at that profile. Do this in every new PowerShell window; the sign-in lasts a few hours.
+
 ```powershell
+$env:AWS_PROFILE = 'AdministratorAccess-<account-id>'   # name from: aws configure list-profiles
+aws sso login
 terraform version          # needs 1.6 or newer
 aws sts get-caller-identity
 ```

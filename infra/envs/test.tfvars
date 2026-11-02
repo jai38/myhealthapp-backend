@@ -29,5 +29,5 @@ email_verification_required = false
 
 # The GitHub OIDC provider exists once per account and is created by the v1 environment.
 create_github_oidc_provider = false
-github_repository           = "jai38/myhealthapp-backend"
+github_oidc_subject_prefix  = "repo:jai38@71269258/myhealthapp-backend@1415279162"
 github_allowed_refs         = ["refs/heads/main"]

@@ -224,8 +224,10 @@ resource "aws_ssm_parameter" "secret" {
   key_id      = aws_kms_key.data.arn
   value       = "REPLACE_ME_BY_OWNER"
 
+  # The owner sets real values with the CLI (README step 7), which records the key by alias. Same key, so
+  # ignoring key_id stops Terraform from rewriting the secrets just to swap the alias for the ARN.
   lifecycle {
-    ignore_changes = [value]
+    ignore_changes = [value, key_id]
   }
 }
 

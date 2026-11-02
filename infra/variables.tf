@@ -286,10 +286,15 @@ variable "budget_monthly_usd" {
 # GitHub deploy role
 # ---------------------------------------------------------------------------
 
-variable "github_repository" {
-  description = "owner/name of the repository allowed to deploy."
+variable "github_oidc_subject_prefix" {
+  description = "Subject prefix GitHub puts in the OIDC token for the repository allowed to deploy, without the ':ref:...' part. The repository uses immutable subjects (owner and repository ids), so a renamed or recreated repository cannot assume the role. Read it with: gh api repos/<owner>/<repo>/actions/oidc/customization/sub"
   type        = string
-  default     = "jai38/myhealthapp-backend"
+  default     = "repo:jai38@71269258/myhealthapp-backend@1415279162"
+
+  validation {
+    condition     = startswith(var.github_oidc_subject_prefix, "repo:") && !strcontains(var.github_oidc_subject_prefix, ":ref:")
+    error_message = "github_oidc_subject_prefix must start with 'repo:' and must not include the ':ref:' part."
+  }
 }
 
 variable "github_allowed_refs" {

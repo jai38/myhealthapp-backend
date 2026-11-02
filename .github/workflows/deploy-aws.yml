@@ -68,18 +68,29 @@ jobs:
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Tags are immutable, so a re-run for the same commit reuses the image pushed by the earlier run.
+      - name: Check for an existing image for this commit
+        id: image
+        run: |
+          echo "uri=${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=${GITHUB_SHA}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Image for ${GITHUB_SHA} already in ECR; skipping the build"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up QEMU and Buildx (ARM image on an x86 runner)
+        if: steps.image.outputs.exists != 'true'
         uses: docker/setup-qemu-action@v3
         with:
           platforms: arm64
-      - uses: docker/setup-buildx-action@v3
+      - if: steps.image.outputs.exists != 'true'
+        uses: docker/setup-buildx-action@v3
 
       - name: Build and push the ARM image
-        id: image
-        run: |
-          IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
-          docker buildx build --platform linux/arm64 --push -t "$IMAGE" .
-          echo "uri=$IMAGE" >> "$GITHUB_OUTPUT"
+        if: steps.image.outputs.exists != 'true'
+        run: docker buildx build --platform linux/arm64 --push -t "${{ steps.image.outputs.uri }}" .
 
       - name: Register new task definition revisions with the image
         id: taskdefs
