@@ -139,7 +139,7 @@ cd infra
 
 The deploy workflow (`.github/workflows/deploy-aws.yml`) runs only on request and only from `main`, so the branch has to be merged first:
 
-1. Merge `phase-2/aws` into `main`. This also triggers the existing Render deploy, which still works (`render.yaml` now runs migrations itself). Do this only when you are ready for that.
+1. Merge `phase-2/aws` into `main`. (Done 2 November 2026. Before the cutover this also redeployed Render, which has since been retired.)
 2. GitHub, **Actions**, **Deploy to AWS (ECS)**, **Run workflow** on `main`.
 3. The run builds the ARM image (about 10-15 minutes under emulation), runs the migration task, updates the API and worker, waits for the API to be stable, and checks the health URL.
 

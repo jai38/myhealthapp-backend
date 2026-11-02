@@ -22,7 +22,7 @@ const envSchema = z.object({
   // Must be an SES-verified sender. No default in production so a placeholder address is never used.
   EMAIL_FROM: z.string().optional(),
   SES_REGION: z.string().optional(),
-  // 'inline' runs extraction inside the API process (local, tests, Render). 'sqs' hands it to the separate worker.
+  // 'inline' runs extraction inside the API process (local and tests). 'sqs' hands it to the separate worker.
   EXTRACTION_MODE: z.enum(['inline', 'sqs']).default('inline'),
   EXTRACTION_JOBS_QUEUE_URL: z.string().optional(),
   EXTRACTION_RESULTS_QUEUE_URL: z.string().optional(),

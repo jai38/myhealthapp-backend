@@ -1,4 +1,6 @@
-name: Backend CI & Auto-Deployment
+name: Backend CI
+
+# Tests only. Deploys to AWS run from deploy-aws.yml (manual). Render was retired at the Phase 2 cutover.
 
 on:
   push:
@@ -79,27 +81,3 @@ jobs:
 
       - name: Verify Production Build
         run: npm run build
-
-  deploy:
-    name: Deploy to Render
-    needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Trigger Render Deploy Hook
-        run: |
-          if [ -n "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
-            echo "Triggering Render deployment via secret deploy hook..."
-            curl -f -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
-            echo "Render deploy hook triggered successfully!"
-          else
-            echo "RENDER_DEPLOY_HOOK_URL secret not set in repository."
-            echo "Render auto-deploys git pushes to 'main' automatically via connected GitHub repo."
-          fi
-
-      - name: Healthcheck Live Deployment
-        run: |
-          echo "Waiting 15 seconds for Render deployment to initialize..."
-          sleep 15
-          curl -f -s https://myhealthapp-backend.onrender.com/healthz || echo "Render is spinning up new instance..."
