@@ -2,7 +2,9 @@
 
 Terraform for one lean environment in Mumbai (`ap-south-1`). Everything is code; sizes are variables in `envs/*.tfvars`.
 
-> **Status: written but not yet run.** Terraform was not installed where this was written, so `terraform fmt` and `terraform validate` have not been run. Step 3 runs them first. If `validate` reports an error, fix it before anything else; do not apply a failing plan.
+> **Status: v1 is live** (applied 2 November 2026, account `768666230063`, `ap-south-1`). Steps 1-10 are done; the AI worker stays off until step 11. Always read a plan before applying it, and do not apply a plan that destroys anything you did not expect.
+>
+> **Account notes.** The organization's root SCP `AdvancedModeRegionRestrictionSecurityControlPolicy` allows only listed regions; `ap-south-1` was added to its `RegionFloor` list. Sign in with the SSO profile (step 1): `~/.aws/credentials` holds an old static `[default]` key that AWS rejects.
 
 ## What it builds
 

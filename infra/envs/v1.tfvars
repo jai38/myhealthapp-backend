@@ -27,8 +27,8 @@ log_retention_days = 14
 budget_monthly_usd = 60
 
 # --- Application -----------------------------------------------------------
-# Flip to true only after the AI provider terms are verified. The worker will not start while false.
-ai_provider_approved = false
+# Owner approved Gemini (gemini-2.5-flash) for this version on 2 Nov 2026. The worker will not start while false.
+ai_provider_approved = true
 
 # Keep false until the app has verification screens (Phase 5).
 email_verification_required = false

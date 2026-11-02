@@ -382,6 +382,12 @@ describe('worker configuration guard', () => {
     expect(() => validateWorkerConfig({ ...valid, GEMINI_API_KEY: '' })).toThrow(/GEMINI_API_KEY/);
   });
 
+  it('refuses to start in production while the Gemini key is the Parameter Store placeholder', () => {
+    expect(() => validateWorkerConfig({ ...valid, GEMINI_API_KEY: 'REPLACE_ME_BY_OWNER' })).toThrow(
+      /GEMINI_API_KEY is still the Parameter Store placeholder/,
+    );
+  });
+
   it('requires real SQS queue URLs and a remote storage endpoint in production', () => {
     expect(() => validateWorkerConfig({ ...valid, EXTRACTION_JOBS_QUEUE_URL: 'http://localhost:9324/q' })).toThrow(
       /EXTRACTION_JOBS_QUEUE_URL/,

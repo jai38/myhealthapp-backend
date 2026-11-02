@@ -18,6 +18,8 @@ export interface WorkerConfig {
 
 const SQS_URL_PATTERN = /^https:\/\/sqs\.[a-z0-9-]+\.amazonaws\.com\//;
 const LOCAL_PATTERN = /(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i;
+/** Value infra/data.tf gives each secret parameter until the owner sets the real one. */
+const PARAMETER_PLACEHOLDER = 'REPLACE_ME_BY_OWNER';
 
 /** Names that give database or session access. The worker must never be started with them in production. */
 export const FORBIDDEN_WORKER_VARIABLES = [
@@ -61,8 +63,12 @@ export function validateWorkerConfig(processEnv: EnvLike = process.env): WorkerC
     }
 
     // The worker is where document content reaches the AI provider, so the approval gate lives here.
-    if (!processEnv.GEMINI_API_KEY || processEnv.GEMINI_API_KEY.trim() === '') {
+    const geminiKey = processEnv.GEMINI_API_KEY?.trim() ?? '';
+    if (!geminiKey) {
       violations.push('GEMINI_API_KEY is required in production.');
+    } else if (geminiKey === PARAMETER_PLACEHOLDER) {
+      // Terraform creates the parameter with this value; fail at start rather than on every extraction.
+      violations.push('GEMINI_API_KEY is still the Parameter Store placeholder. Set the real key (infra README step 7).');
     }
     if (processEnv.AI_PROVIDER_APPROVED !== 'true') {
       violations.push(
