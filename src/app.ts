@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { env } from './config/env.js';
 import { createAuthMiddleware, requireOwnership } from './middleware/auth.js';
+import { createAppStatusHandler, AppStatusConfig, appStatusFromEnv } from './modules/app-status/app-status.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import {
   StorageProvider,
@@ -58,6 +59,8 @@ import { createAuthRouter } from './modules/auth/routes.js';
 import { getPrismaClient } from './modules/persistence/database.js';
 
 export interface AppOptions {
+  /** Overrides the env-derived app-status values (tests). */
+  appStatus?: AppStatusConfig;
   authAdapter?: AuthProviderAdapter;
   storageProvider?: StorageProvider;
   extractionProvider?: PrescriptionExtractionProvider;
@@ -101,6 +104,9 @@ export const createApp = (options?: AppOptions): Express => {
       environment: env.NODE_ENV,
     });
   });
+
+  // Public and unauthenticated: no user data, only release/maintenance metadata.
+  app.get(`${env.API_PREFIX}/app-status`, createAppStatusHandler(options?.appStatus ?? appStatusFromEnv(env)));
 
   const authAdapter =
     options?.authAdapter ??

@@ -51,6 +51,7 @@ const TIMES = { reminderTimes: ['09:00'] };
 const ROUTE_POLICY: Record<string, Policy> = {
   // ---- public by design ----
   'GET /healthz': { kind: 'public' },
+  [`GET ${API}/app-status`]: { kind: 'public' },
   [`POST ${API}/auth/signup`]: { kind: 'public' },
   [`POST ${API}/auth/login`]: { kind: 'public' },
   [`POST ${API}/auth/refresh`]: { kind: 'public' },

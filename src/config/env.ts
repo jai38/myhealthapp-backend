@@ -3,7 +3,9 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const envSchema = z.object({
+const semver = z.string().regex(/^\d+\.\d+\.\d+$/, 'must be a semantic version like 1.2.3');
+
+export const envSchema = z.object({
   PORT: z.string().default('4000').transform((val) => parseInt(val, 10)),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PREFIX: z.string().default('/api/v1'),
@@ -38,6 +40,11 @@ const envSchema = z.object({
   APP_BASE_URL: z.string().optional(),
   // Temporary: set to false until the app has verification screens (Phase 5).
   EMAIL_VERIFICATION_REQUIRED: z.string().default('true').transform((v) => v !== 'false'),
+  // Public app-status (force update / maintenance). Defaults never block anyone.
+  APP_MIN_VERSION: semver.default('0.0.0'),
+  APP_LATEST_VERSION: semver.default('0.0.0'),
+  APP_MAINTENANCE: z.string().default('false').transform((v) => v.trim().toLowerCase() === 'true'),
+  APP_MAINTENANCE_MESSAGE: z.string().max(280).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
