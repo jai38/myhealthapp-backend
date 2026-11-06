@@ -48,7 +48,33 @@ describe('app-status env parsing', () => {
     expect(envSchema.parse({ APP_MAINTENANCE: 'true' }).APP_MAINTENANCE).toBe(true);
   });
 
-  it.each(['1.2', 'v1.2.3', '1.2.3-beta', 'abc', ''])('rejects invalid semver %j', (v) => {
+  it('accepts "false" for maintenance', () => {
+    expect(envSchema.parse({ APP_MAINTENANCE: 'false' }).APP_MAINTENANCE).toBe(false);
+  });
+
+  it.each(['yes', '1', 'on', 'TRUE', 'tru', ''])('rejects APP_MAINTENANCE %j without echoing the value', (v) => {
+    const r = envSchema.safeParse({ APP_MAINTENANCE: v });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const text = JSON.stringify(r.error.issues);
+      expect(text).toContain('APP_MAINTENANCE');
+      if (v) expect(text.replace('APP_MAINTENANCE', '')).not.toContain(`"${v}"`);
+    }
+  });
+
+  it('rejects APP_MIN_VERSION greater than APP_LATEST_VERSION', () => {
+    expect(envSchema.safeParse({ APP_MIN_VERSION: '1.4.0', APP_LATEST_VERSION: '1.3.9' }).success).toBe(false);
+    expect(envSchema.safeParse({ APP_MIN_VERSION: '2.0.0', APP_LATEST_VERSION: '1.9.9' }).success).toBe(false);
+    expect(envSchema.safeParse({ APP_MIN_VERSION: '1.10.0', APP_LATEST_VERSION: '1.9.0' }).success).toBe(false);
+  });
+
+  it('accepts APP_MIN_VERSION less than or equal to APP_LATEST_VERSION', () => {
+    expect(envSchema.safeParse({ APP_MIN_VERSION: '1.9.0', APP_LATEST_VERSION: '1.10.0' }).success).toBe(true);
+    expect(envSchema.safeParse({ APP_MIN_VERSION: '1.2.3', APP_LATEST_VERSION: '1.2.3' }).success).toBe(true);
+    expect(envSchema.safeParse({ APP_MIN_VERSION: '0.0.0', APP_LATEST_VERSION: '0.0.0' }).success).toBe(true);
+  });
+
+  it.each(['1.2','v1.2.3', '1.2.3-beta', 'abc', ''])('rejects invalid semver %j', (v) => {
     expect(envSchema.safeParse({ APP_MIN_VERSION: v }).success).toBe(false);
     expect(envSchema.safeParse({ APP_LATEST_VERSION: v }).success).toBe(false);
   });

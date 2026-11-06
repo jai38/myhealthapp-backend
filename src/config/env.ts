@@ -43,8 +43,30 @@ export const envSchema = z.object({
   // Public app-status (force update / maintenance). Defaults never block anyone.
   APP_MIN_VERSION: semver.default('0.0.0'),
   APP_LATEST_VERSION: semver.default('0.0.0'),
-  APP_MAINTENANCE: z.string().default('false').transform((v) => v.trim().toLowerCase() === 'true'),
+  // Only the exact strings "true" or "false" are accepted; anything else fails startup (message names no value).
+  APP_MAINTENANCE: z
+    .string()
+    .default('false')
+    .refine((v) => v === 'true' || v === 'false', { message: 'APP_MAINTENANCE must be "true" or "false"' })
+    .transform((v) => v === 'true'),
   APP_MAINTENANCE_MESSAGE: z.string().max(280).optional(),
+}).superRefine((cfg, ctx) => {
+  const a = cfg.APP_MIN_VERSION.split('.').map(Number);
+  const b = cfg.APP_LATEST_VERSION.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) {
+      if (x > y) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['APP_MIN_VERSION'],
+          message: 'APP_MIN_VERSION must not be greater than APP_LATEST_VERSION',
+        });
+      }
+      return;
+    }
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);
