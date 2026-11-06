@@ -53,7 +53,13 @@ locals {
       # Only the worker does, and the worker enforces the approval gate. Setting provider=gemini with approval
       # off makes validateProductionConfig refuse to start the API.
       { name = "GEMINI_MODEL", value = var.gemini_model },
+      { name = "APP_MIN_VERSION", value = var.app_min_version },
+      { name = "APP_LATEST_VERSION", value = var.app_latest_version },
+      { name = "APP_MAINTENANCE", value = tostring(var.app_maintenance) },
     ],
+    var.app_maintenance_message != "" ? [
+      { name = "APP_MAINTENANCE_MESSAGE", value = var.app_maintenance_message },
+    ] : [],
     var.ses_identity != "" && var.email_from != "" ? [
       { name = "EMAIL_PROVIDER", value = "ses" },
       { name = "EMAIL_FROM", value = var.email_from },

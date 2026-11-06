@@ -228,6 +228,40 @@ variable "email_verification_required" {
   default     = false
 }
 
+# App status (GET /api/v1/app-status). The API refuses to start if a version is not x.y.z,
+# or if the minimum is above the latest, so a bad value fails the deploy, not the patient.
+variable "app_min_version" {
+  description = "Lowest app version allowed to run. Raise it only when a real store listing exists."
+  type        = string
+  default     = "1.0.0"
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.app_min_version))
+    error_message = "app_min_version must be x.y.z."
+  }
+}
+
+variable "app_latest_version" {
+  description = "Newest app version. Apps below it see a dismissible update card."
+  type        = string
+  default     = "1.0.0"
+  validation {
+    condition     = can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+$", var.app_latest_version))
+    error_message = "app_latest_version must be x.y.z."
+  }
+}
+
+variable "app_maintenance" {
+  description = "Show the maintenance screen to every app."
+  type        = bool
+  default     = false
+}
+
+variable "app_maintenance_message" {
+  description = "Optional maintenance text. Leave empty to leave the setting unset (a blank value is never sent)."
+  type        = string
+  default     = ""
+}
+
 variable "email_from" {
   description = "Sender address for account emails. Must belong to the SES identity."
   type        = string
