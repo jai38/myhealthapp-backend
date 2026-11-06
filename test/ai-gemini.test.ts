@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GeminiPrescriptionExtractionProvider } from '../src/modules/ai-extraction/gemini-provider.js';
+import { GeminiPrescriptionExtractionProvider, DEFAULT_GEMINI_MODEL } from '../src/modules/ai-extraction/gemini-provider.js';
 
 describe('GeminiPrescriptionExtractionProvider', () => {
   const fakeApiKey = 'AIzaSyFakeKeyForTesting123';
@@ -121,6 +121,61 @@ describe('GeminiPrescriptionExtractionProvider', () => {
     expect(result.medicines[0].dosage_form).toBe('SYRUP');
     expect(result.medicines[0].route).toBe('ORAL');
     expect(result.medicines[0].confidence).toBe('UNCERTAIN');
+  });
+
+  describe('request shape and model selection', () => {
+    const okResponse = {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: JSON.stringify({ medicines: [] }) }] } }],
+      }),
+    };
+    const input = { documentBuffer: Buffer.from('synthetic'), mimeType: 'application/pdf' };
+    let savedModel: string | undefined;
+
+    beforeEach(() => {
+      savedModel = process.env.GEMINI_MODEL;
+    });
+
+    afterEach(() => {
+      if (savedModel === undefined) delete process.env.GEMINI_MODEL;
+      else process.env.GEMINI_MODEL = savedModel;
+    });
+
+    it('sends no sampling params and keeps JSON response mime type', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(okResponse);
+      vi.stubGlobal('fetch', fetchMock);
+
+      await provider.extractPrescription(input);
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.generationConfig.responseMimeType).toBe('application/json');
+      for (const key of ['temperature', 'topP', 'topK', 'candidateCount', 'top_p', 'top_k', 'candidate_count']) {
+        expect(body.generationConfig).not.toHaveProperty(key);
+      }
+    });
+
+    it('defaults to the default model when GEMINI_MODEL is unset', async () => {
+      delete process.env.GEMINI_MODEL;
+      const fetchMock = vi.fn().mockResolvedValue(okResponse);
+      vi.stubGlobal('fetch', fetchMock);
+
+      await new GeminiPrescriptionExtractionProvider(fakeApiKey).extractPrescription(input);
+
+      expect(DEFAULT_GEMINI_MODEL).toBe('gemini-3.5-flash-lite');
+      expect(fetchMock.mock.calls[0][0]).toContain('/models/gemini-3.5-flash-lite:generateContent');
+    });
+
+    it('uses GEMINI_MODEL when set', async () => {
+      process.env.GEMINI_MODEL = 'gemini-custom-test';
+      const fetchMock = vi.fn().mockResolvedValue(okResponse);
+      vi.stubGlobal('fetch', fetchMock);
+
+      await new GeminiPrescriptionExtractionProvider(fakeApiKey).extractPrescription(input);
+
+      expect(fetchMock.mock.calls[0][0]).toContain('/models/gemini-custom-test:generateContent');
+    });
   });
 
   it('handles Gemini API rate limits (429) or errors with helpful messages', async () => {

@@ -18,7 +18,7 @@ import {
 import { ExtractionDispatcher } from './modules/ai-extraction/messages.js';
 import { SqsMessageQueue } from './modules/ai-extraction/message-queue.js';
 import { QueueExtractionDispatcher } from './modules/ai-extraction/queue-dispatcher.js';
-import { GeminiPrescriptionExtractionProvider } from './modules/ai-extraction/gemini-provider.js';
+import { GeminiPrescriptionExtractionProvider, DEFAULT_GEMINI_MODEL } from './modules/ai-extraction/gemini-provider.js';
 import { DocumentService } from './modules/documents/document-service.js';
 import { ExtractionJobQueue } from './modules/ai-extraction/job-queue.js';
 import { PrescriptionService } from './modules/prescriptions/prescription-service.js';
@@ -196,7 +196,7 @@ export const createApp = (options?: AppOptions): Express => {
   const extractionProvider =
     options?.extractionProvider ??
     (extractionDispatcher
-      ? new QueuedExtractionProvider(`gemini-${process.env.GEMINI_MODEL || 'gemini-2.5-flash'}`)
+      ? new QueuedExtractionProvider(`gemini-${process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL}`)
       : geminiApiKey && (!isTest || process.env.AI_EXTRACTION_PROVIDER === 'gemini') && (process.env.AI_EXTRACTION_PROVIDER === 'gemini' || process.env.AI_EXTRACTION_PROVIDER === 'auto' || !process.env.AI_EXTRACTION_PROVIDER)
         ? new GeminiPrescriptionExtractionProvider(geminiApiKey)
         : new MockPrescriptionExtractionProvider());

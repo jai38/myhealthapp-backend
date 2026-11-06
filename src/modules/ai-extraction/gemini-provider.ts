@@ -110,6 +110,9 @@ function sanitizeExtraction(raw: any): any {
   };
 }
 
+/** Default Gemini model id; override with the GEMINI_MODEL environment variable. */
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash-lite';
+
 /**
  * Production Gemini AI Extraction Provider for Real Prescription Documents.
  * Uses Google Gemini multimodal API for OCR and structured clinical extraction.
@@ -119,7 +122,7 @@ export class GeminiPrescriptionExtractionProvider implements PrescriptionExtract
   private apiKey: string;
   private model: string;
 
-  constructor(apiKey: string, model: string = process.env.GEMINI_MODEL || 'gemini-2.5-flash') {
+  constructor(apiKey: string, model: string = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL) {
     this.apiKey = apiKey.trim();
     this.model = model;
     this.providerName = `gemini-${model}`;
@@ -178,7 +181,6 @@ Important:
       ],
       generationConfig: {
         responseMimeType: 'application/json',
-        temperature: 0.1,
       },
     };
 

@@ -213,7 +213,7 @@ variable "app_base_url" {
 variable "gemini_model" {
   description = "Gemini model name used by the worker."
   type        = string
-  default     = "gemini-2.5-flash"
+  default     = "gemini-3.5-flash-lite"
 }
 
 variable "ai_provider_approved" {
