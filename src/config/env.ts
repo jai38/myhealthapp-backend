@@ -50,6 +50,9 @@ export const envSchema = z.object({
     .refine((v) => v === 'true' || v === 'false', { message: 'APP_MAINTENANCE must be "true" or "false"' })
     .transform((v) => v === 'true'),
   APP_MAINTENANCE_MESSAGE: z.string().max(280).optional(),
+  // Which copy of the backend this is. dev and prod share one AWS account; validateProductionConfig
+  // refuses a dev deployment wired to prod data or the reverse. Unset means prod in production, local elsewhere.
+  DEPLOYMENT_ENV: z.enum(['local', 'dev', 'prod']).optional(),
 }).superRefine((cfg, ctx) => {
   const a = cfg.APP_MIN_VERSION.split('.').map(Number);
   const b = cfg.APP_LATEST_VERSION.split('.').map(Number);
@@ -67,7 +70,10 @@ export const envSchema = z.object({
       return;
     }
   }
-});
+}).transform((cfg) => ({
+  ...cfg,
+  DEPLOYMENT_ENV: cfg.DEPLOYMENT_ENV ?? (cfg.NODE_ENV === 'production' ? ('prod' as const) : ('local' as const)),
+}));
 
 const parsed = envSchema.safeParse(process.env);
 
@@ -186,6 +192,27 @@ export function validateProductionConfig(
       if (!value || !/^https:\/\/sqs\.[a-z0-9-]+\.amazonaws\.com\//.test(value)) {
         violations.push(`${name} must be an https Amazon SQS queue URL when EXTRACTION_MODE is "sqs".`);
       }
+    }
+  }
+
+  // 9. dev and prod share one AWS account: keep each deployment on its own data.
+  //    prod uses schema=public and the prod bucket; dev uses schema=dev and a bucket named with "-dev-".
+  const deployment = config.DEPLOYMENT_ENV ?? 'prod';
+  if (deployment !== 'prod' && deployment !== 'dev') {
+    violations.push('DEPLOYMENT_ENV must be "prod" or "dev" in production.');
+  } else {
+    let schema = 'public';
+    try {
+      schema = new URL(config.DATABASE_URL).searchParams.get('schema') ?? 'public';
+    } catch {
+      // An unparseable URL fails at connect time; the checks above already cover its content.
+    }
+    const devBucket = /(^|-)dev(-|$)/.test(storageBucket ?? '');
+    if (deployment === 'prod' && (schema === 'dev' || devBucket)) {
+      violations.push('DEPLOYMENT_ENV is prod but DATABASE_URL or STORAGE_BUCKET points at dev data.');
+    }
+    if (deployment === 'dev' && (schema !== 'dev' || (storageProvider !== 'memory' && !devBucket))) {
+      violations.push('DEPLOYMENT_ENV is dev but DATABASE_URL is not schema=dev or STORAGE_BUCKET is not the dev bucket.');
     }
   }
 

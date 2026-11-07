@@ -273,3 +273,31 @@ describe('SES email sender', () => {
     expect(outbox.outbox).toHaveLength(1);
   });
 });
+
+describe('production config guard: dev and prod stay apart on one AWS account', () => {
+  const prodUrl = 'postgresql://u:p@db.internal:5432/myhealthapp?schema=public&sslmode=require';
+  const devUrl = 'postgresql://u:p@db.internal:5432/myhealthapp?schema=dev&sslmode=require';
+  const prodBucket = { STORAGE_BUCKET: 'myhealth-v1-documents-123456789012' };
+  const devBucket = { STORAGE_BUCKET: 'myhealth-v1-dev-documents-123456789012' };
+
+  it('accepts prod on the public schema and prod bucket, with DEPLOYMENT_ENV unset or prod', () => {
+    expect(() => validateProductionConfig({ ...goodConfig, DATABASE_URL: prodUrl }, prodBucket)).not.toThrow();
+    expect(() => validateProductionConfig({ ...goodConfig, DATABASE_URL: prodUrl, DEPLOYMENT_ENV: 'prod' }, prodBucket)).not.toThrow();
+  });
+
+  it('accepts dev on the dev schema and dev bucket', () => {
+    expect(() => validateProductionConfig({ ...goodConfig, DATABASE_URL: devUrl, DEPLOYMENT_ENV: 'dev' }, devBucket)).not.toThrow();
+  });
+
+  it.each([
+    ['prod pointed at the dev schema', { DATABASE_URL: devUrl, DEPLOYMENT_ENV: 'prod' }, prodBucket],
+    ['prod pointed at the dev bucket', { DATABASE_URL: prodUrl, DEPLOYMENT_ENV: 'prod' }, devBucket],
+    ['unset (prod) pointed at the dev schema', { DATABASE_URL: devUrl }, prodBucket],
+    ['dev pointed at the prod schema', { DATABASE_URL: prodUrl, DEPLOYMENT_ENV: 'dev' }, devBucket],
+    ['dev with no schema parameter', { DATABASE_URL: 'postgresql://u:p@db.internal:5432/myhealthapp', DEPLOYMENT_ENV: 'dev' }, devBucket],
+    ['dev pointed at the prod bucket', { DATABASE_URL: devUrl, DEPLOYMENT_ENV: 'dev' }, prodBucket],
+    ['local deployment running as production', { DATABASE_URL: prodUrl, DEPLOYMENT_ENV: 'local' }, prodBucket],
+  ])('refuses %s', (_name, change, storage) => {
+    expect(() => validateProductionConfig({ ...goodConfig, ...change }, storage)).toThrow(/DEPLOYMENT_ENV/);
+  });
+});
