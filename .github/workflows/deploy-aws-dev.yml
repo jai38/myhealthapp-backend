@@ -149,8 +149,9 @@ jobs:
       - name: Migrate the dev schema
         run: /tmp/run-task.sh "${{ steps.taskdefs.outputs.migrate }}"
 
+      # Deploying dev means using it: start one task even if dev-env.ps1 Stop left the count at 0.
       - name: Update the dev API
-        run: aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_API_SERVICE" --task-definition "${{ steps.taskdefs.outputs.api }}" > /dev/null
+        run: aws ecs update-service --cluster "$ECS_CLUSTER" --service "$ECS_API_SERVICE" --task-definition "${{ steps.taskdefs.outputs.api }}" --desired-count 1 > /dev/null
 
       - name: Reset and reseed synthetic data
         if: inputs.seed == 'reset'
