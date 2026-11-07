@@ -201,3 +201,9 @@ Terraform state is a local file in `terraform.tfstate.d/`, and it is git-ignored
 - The app currently connects as the database owner (`myhealth_admin`). A separate least-privilege application role is a good follow-up.
 - Non-current S3 versions expire after 1 day. Account erasure deletes current objects; the short window keeps erased documents from lingering.
 - The worker's Gemini key reaches it through its ECS execution role at task start; the worker's runtime role has no Parameter Store access.
+
+## 15. Dev copy on the same account
+
+`dev.tf` adds a dev copy to this stack when `dev_enabled = true` in `envs/v1.tfvars`. It shares the VPC, RDS instance, cluster, ECR and VPC link with prod, and keeps its own schema (`dev`), bucket, secrets (`/myhealth/v1/dev/*`), API service, API Gateway URL and roles. Extraction runs inline in the dev API. A plan should show only additions. Cost is about USD 10 a month while the dev API runs; `./dev-env.ps1 Stop` pauses it.
+
+Setup, synthetic data and switching the app: `docs/dev-data/README.md` in the workspace. Day-to-day: `./dev-env.ps1 Status | Start | Stop | SetSecrets | Migrate | Seed | Remove | UploadImages`.

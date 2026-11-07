@@ -102,6 +102,7 @@ export const createApp = (options?: AppOptions): Express => {
       service: 'myhealthapp-backend',
       timestamp: new Date().toISOString(),
       environment: env.NODE_ENV,
+      deployment: env.DEPLOYMENT_ENV,
     });
   });
 
