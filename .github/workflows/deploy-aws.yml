@@ -50,10 +50,11 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  deploy:
-    name: Build, migrate, deploy
+  # Native ARM runner: no QEMU emulation (Node crashed under it with "Illegal instruction").
+  build:
+    name: Build the ARM image (native)
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -69,28 +70,38 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       # Tags are immutable, so a re-run for the same commit reuses the image pushed by the earlier run.
-      - name: Check for an existing image for this commit
-        id: image
+      - name: Build and push unless this commit's image exists
         run: |
-          echo "uri=${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=${GITHUB_SHA}" > /dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          uri="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          if docker manifest inspect "$uri" > /dev/null 2>&1; then
             echo "Image for ${GITHUB_SHA} already in ECR; skipping the build"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          docker build -t "$uri" .
+          docker push "$uri"
 
-      - name: Set up QEMU and Buildx (ARM image on an x86 runner)
-        if: steps.image.outputs.exists != 'true'
-        uses: docker/setup-qemu-action@v3
+  deploy:
+    name: Migrate, deploy
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          platforms: arm64
-      - if: steps.image.outputs.exists != 'true'
-        uses: docker/setup-buildx-action@v3
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Build and push the ARM image
-        if: steps.image.outputs.exists != 'true'
-        run: docker buildx build --platform linux/arm64 --push -t "${{ steps.image.outputs.uri }}" .
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Image for this commit
+        id: image
+        run: echo "uri=${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Register new task definition revisions with the image
         id: taskdefs
