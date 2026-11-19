@@ -175,7 +175,11 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
       const tzOffset = parseTimezoneOffset(req);
       const doses = await medicationService.getDoseOccurrences(patientProfileId, from, to, tzOffset);
       res.status(200).json({ data: doses });
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.statusCode === 400) {
+        res.status(400).json({ error: { code: 'INVALID_DATE', message: err.message } });
+        return;
+      }
       next(err);
     }
   });

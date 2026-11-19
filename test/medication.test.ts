@@ -501,6 +501,27 @@ describe('Phase 4: Medication Management & Reminders API & Clinical Integrity', 
     });
   });
 
+  describe('Dose window limits', () => {
+    it('answers a window over 30 days with 400 INVALID_DATE, not 500', async () => {
+      const res = await request(app)
+        .get('/api/v1/medications/doses')
+        .query({ from: '2026-01-01T00:00:00Z', to: '2026-03-01T00:00:00Z' })
+        .set('Authorization', `Bearer ${tokenPatientA}`);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('INVALID_DATE');
+      expect(res.body.error.message).toContain('30 days');
+    });
+
+    it('still accepts a window of exactly 30 days', async () => {
+      const res = await request(app)
+        .get('/api/v1/medications/doses')
+        .query({ from: '2026-01-01T00:00:00Z', to: '2026-01-31T00:00:00Z' })
+        .set('Authorization', `Bearer ${tokenPatientA}`);
+      expect(res.status).toBe(200);
+      expect(Array.isArray(res.body.data)).toBe(true);
+    });
+  });
+
   describe('Security & Multi-Tenant Isolation (Patient Ownership)', () => {
     it('Patient B cannot read or modify Patient A medications (returns 404)', async () => {
       await setupConfirmedPrescriptionWithMedications(patientA);
