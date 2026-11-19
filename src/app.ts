@@ -41,6 +41,9 @@ import {
   MedicationRepository,
   PrismaMedicationRepository,
   InMemoryMedicationRepository,
+  PatientProfileRepository,
+  PrismaPatientProfileRepository,
+  InMemoryPatientProfileRepository,
 } from './modules/persistence/repositories.js';
 import { createDocumentRouter } from './modules/documents/routes.js';
 import { createPrescriptionRouter } from './modules/prescriptions/routes.js';
@@ -78,6 +81,7 @@ export interface AppOptions {
   uploadIntentRepo?: UploadIntentRepository;
   timelineRepo?: TimelineRepository;
   medicationRepo?: MedicationRepository;
+  patientProfileRepo?: PatientProfileRepository;
 }
 
 export const createApp = (options?: AppOptions): Express => {
@@ -279,7 +283,13 @@ export const createApp = (options?: AppOptions): Express => {
 
   const reportService =
     options?.reportService ??
-    new ReportService(timelineRepo, medicationRepo, documentService);
+    new ReportService(
+      timelineRepo,
+      medicationRepo,
+      documentService,
+      options?.patientProfileRepo ??
+        (useInMemoryDb ? new InMemoryPatientProfileRepository() : new PrismaPatientProfileRepository())
+    );
 
   app.use(
     `${env.API_PREFIX}/reports`,

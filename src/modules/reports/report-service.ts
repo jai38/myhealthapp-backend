@@ -5,6 +5,7 @@ import {
   TimelineEventDetailRecord,
   MedicationDetailRecord,
   DocumentRecord,
+  PatientProfileRepository,
 } from '../persistence/repositories.js';
 import { DocumentService } from '../documents/document-service.js';
 import {
@@ -44,7 +45,9 @@ export class ReportService {
   constructor(
     private readonly timelineRepo: TimelineRepository,
     private readonly medicationRepo: MedicationRepository,
-    private readonly documentService: DocumentService
+    private readonly documentService: DocumentService,
+    /** Without one, reports carry no name rather than a made-up one. */
+    private readonly profileRepo?: PatientProfileRepository
   ) {}
 
   /**
@@ -189,7 +192,8 @@ export class ReportService {
     const payload: ExportDataPayload = {
       patient: {
         patientProfileId,
-        fullName: 'Test Patient',
+        // The patient's own name; '' when none was given. Never a placeholder.
+        fullName: (await this.profileRepo?.findFullName(patientProfileId)) ?? '',
       },
       reportTitle: title?.trim() || 'Medical Summary Report',
       generatedAt: new Date().toISOString(),

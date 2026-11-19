@@ -302,7 +302,7 @@ class PdfPageManager {
   applyFooters(): void {
     const totalPages = this.pages.length;
     const disclaimer =
-      'Notice: This document is an export of patient-verified personal health records compiled using My Health App. ' +
+      'Notice: This document is an export of patient-verified personal health records compiled using Ayoreni. ' +
       'It is provided for informational and clinical reference purposes only and does not constitute a new medical ' +
       'prescription or clinical diagnosis. Please verify against original clinical source documentation.';
 
@@ -397,7 +397,7 @@ export async function generateMedicalReportPdf(
 
   // Col 1: Patient details & verification
   mgr.currentPage.drawText('Patient Name:', { x: col1X, y: textY, size: 8, font: fontBold, color: C_MUTED });
-  mgr.currentPage.drawText(sanitizeAscii(data.patient.fullName || 'Verified Patient'), {
+  mgr.currentPage.drawText(sanitizeAscii(data.patient.fullName) || 'Name not recorded', {
     x: col1X + 70,
     y: textY,
     size: 9.5,
