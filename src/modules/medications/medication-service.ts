@@ -9,7 +9,7 @@ import {
 import { DocumentService } from '../documents/document-service.js';
 
 /** Phone clocks drift: an actionTime up to this far ahead of the server clock still counts as now. */
-export const ACTION_TIME_SKEW_MS = 60_000;
+export const ACTION_TIME_SKEW_MS = 120_000;
 
 function invalidAction(message: string): Error {
   const err = new Error(message);

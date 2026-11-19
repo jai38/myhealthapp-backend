@@ -141,8 +141,8 @@ describe('Phase 4b task 16: dose actions for S06 and S07', () => {
       expect(new Date(res.body.data.actionTime).toISOString()).toBe(at);
     });
 
-    it('allows a few seconds of phone clock drift', async () => {
-      const res = await post(pastDoseId, { action: 'TAKEN', actionTime: new Date(Date.now() + 20_000).toISOString() });
+    it('allows up to 2 minutes of phone clock drift', async () => {
+      const res = await post(pastDoseId, { action: 'TAKEN', actionTime: new Date(Date.now() + 90_000).toISOString() });
       expect(res.status).toBe(200);
     });
   });
