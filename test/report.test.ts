@@ -20,6 +20,7 @@ import { PrescriptionService } from '../src/modules/prescriptions/prescription-s
 import { TimelineService } from '../src/modules/timeline/timeline-service.js';
 import { MedicationService } from '../src/modules/medications/medication-service.js';
 import { ReportService } from '../src/modules/reports/report-service.js';
+import { patientNameForPdf } from '../src/modules/reports/pdf-generator.js';
 
 /** The text drawn in a pdf-lib PDF: inflates each content stream and decodes its hex strings. */
 function pdfText(pdf: Buffer): string {
@@ -583,6 +584,14 @@ describe('Phase 5: Medical PDF Reports & Secure Export API', () => {
         .responseType('blob');
       const text = pdfText(Buffer.from(res.body));
       expect(text).toContain('Name not recorded');
+    });
+  });
+
+  describe('PDF name line', () => {
+    it('never says "not recorded" for a name it cannot draw', () => {
+      expect(patientNameForPdf('')).toBe('Name not recorded');
+      expect(patientNameForPdf('Asha Test')).toBe('Asha Test');
+      expect(patientNameForPdf('\u0906\u0936\u093e')).toBe('Name on file (script not supported in PDF)');
     });
   });
 
