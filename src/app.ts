@@ -62,6 +62,8 @@ export interface AppOptions {
   /** Overrides the env-derived app-status values (tests). */
   appStatus?: AppStatusConfig;
   authAdapter?: AuthProviderAdapter;
+  /** Overrides the profile-name lookup behind GET /auth/me (tests). */
+  lookupFullName?: (patientProfileId: string) => Promise<string | null | undefined>;
   storageProvider?: StorageProvider;
   extractionProvider?: PrescriptionExtractionProvider;
   /** When set (or EXTRACTION_MODE=sqs), extraction runs in the worker instead of inside a request. */
@@ -249,6 +251,14 @@ export const createApp = (options?: AppOptions): Express => {
     `${env.API_PREFIX}/auth`,
     createAuthRouter(authAdapter, authMiddleware, {
       purgePatientData: (patientProfileId) => documentService.purgeByPatientProfile(patientProfileId),
+      lookupFullName: options?.lookupFullName ?? (async (patientProfileId) => {
+        if (useInMemoryDb) return null;
+        const profile = await getPrismaClient().patientProfile.findUnique({
+          where: { id: patientProfileId },
+          select: { fullName: true },
+        });
+        return profile?.fullName ?? null;
+      }),
     })
   );
 

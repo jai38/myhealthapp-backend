@@ -5,6 +5,7 @@ import {
   DoseLogRecord,
   MedicationStatusType,
   DoseStatusType,
+  SkipReasonType,
 } from '../persistence/repositories.js';
 import { DocumentService } from '../documents/document-service.js';
 
@@ -368,17 +369,19 @@ export class MedicationService {
   /**
    * Records an explicit patient-reported action for a dose occurrence.
    * CLINICAL SAFETY:
-   * - Dose actions MUST be explicitly selected by the patient (TAKEN, SKIPPED, SNOOZED).
+   * - Dose actions MUST be explicitly selected by the patient (TAKEN, SKIPPED, SNOOZED, MISSED).
+   * - MISSED is never set automatically; an unrecorded past dose stays PENDING.
    * - Viewing or receiving a notification does not record a dose action.
    */
   async recordDoseAction(
     doseLogId: string,
     patientProfileId: string,
-    action: 'TAKEN' | 'SKIPPED' | 'SNOOZED',
+    action: 'TAKEN' | 'SKIPPED' | 'SNOOZED' | 'MISSED',
     meta?: {
       notes?: string;
       snoozeMinutes?: number;
       actionTime?: string;
+      skipReason?: SkipReasonType;
     }
   ): Promise<DoseLogRecord> {
     const doseLog = await this.medicationRepo.getDoseLogById(doseLogId, patientProfileId);
@@ -389,6 +392,7 @@ export class MedicationService {
     }
 
     const actionTimestamp = meta?.actionTime ? new Date(meta.actionTime) : new Date();
+    if (action === 'MISSED') this.assertDoseIsDue(doseLog);
 
     let snoozeMinutes = meta?.snoozeMinutes;
     if (action === 'SNOOZED') {
@@ -403,8 +407,18 @@ export class MedicationService {
       {
         snoozeMinutes,
         notes: meta?.notes?.trim() || undefined,
+        skipReason: action === 'SKIPPED' ? meta?.skipReason : undefined,
       }
     );
+  }
+
+  /** MISSED only makes sense for a dose that is already due. */
+  private assertDoseIsDue(dose: DoseLogRecord): void {
+    if (dose.scheduledTime.getTime() > Date.now()) {
+      const err = new Error('A dose cannot be marked missed before it is due');
+      (err as any).statusCode = 400;
+      throw err;
+    }
   }
 
   /**
@@ -414,7 +428,8 @@ export class MedicationService {
     doseLogId: string,
     patientProfileId: string,
     action: DoseStatusType,
-    notes?: string
+    notes?: string,
+    skipReason?: SkipReasonType
   ): Promise<DoseLogRecord> {
     const doseLog = await this.medicationRepo.getDoseLogById(doseLogId, patientProfileId);
     if (!doseLog) {
@@ -423,12 +438,22 @@ export class MedicationService {
       throw err;
     }
 
+    if (action === 'MISSED') this.assertDoseIsDue(doseLog);
+
+    // PENDING is Undo: no action time, snooze, reason or notes survive.
+    if (action === 'PENDING') {
+      return this.medicationRepo.updateDoseAction(doseLogId, patientProfileId, 'PENDING', null);
+    }
+
     return this.medicationRepo.updateDoseAction(
       doseLogId,
       patientProfileId,
       action,
       new Date(),
-      { notes: notes?.trim() || undefined }
+      {
+        notes: notes?.trim() || undefined,
+        skipReason: action === 'SKIPPED' ? skipReason : undefined,
+      }
     );
   }
 

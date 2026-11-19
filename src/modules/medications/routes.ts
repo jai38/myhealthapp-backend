@@ -34,17 +34,41 @@ const DiscontinueSchema = z.object({
   reason: z.string().max(500, 'Reason cannot exceed 500 characters').optional(),
 });
 
-const RecordDoseActionSchema = z.object({
-  action: z.enum(['TAKEN', 'SKIPPED', 'SNOOZED']),
-  notes: z.string().max(500).optional(),
-  snoozeMinutes: z.number().int().min(5).max(120).optional(),
-  actionTime: z.string().datetime().optional(),
-});
+const SKIP_REASONS = ['FELT_UNWELL', 'DOCTOR_ADVISED', 'RAN_OUT', 'SIDE_EFFECTS', 'OTHER'] as const;
 
-const CorrectDoseActionSchema = z.object({
-  action: z.enum(['TAKEN', 'SKIPPED', 'PENDING']),
-  notes: z.string().max(500).optional(),
-});
+// A client clock may run slightly ahead of the server; beyond this an actionTime is in the future.
+const ACTION_TIME_SKEW_MS = 2 * 60 * 1000;
+
+const SkipReasonSchema = z.enum(SKIP_REASONS);
+
+const RecordDoseActionSchema = z
+  .object({
+    // MISSED only ever comes from this explicit patient call. Nothing sets it automatically.
+    action: z.enum(['TAKEN', 'SKIPPED', 'SNOOZED', 'MISSED']),
+    notes: z.string().max(500).optional(),
+    snoozeMinutes: z.number().int().min(5).max(120).optional(),
+    actionTime: z.string().datetime().optional(),
+    skipReason: SkipReasonSchema.optional(),
+  })
+  .refine((v) => v.skipReason === undefined || v.action === 'SKIPPED', {
+    message: 'skipReason is only allowed when action is SKIPPED',
+    path: ['skipReason'],
+  })
+  .refine((v) => !v.actionTime || new Date(v.actionTime).getTime() <= Date.now() + ACTION_TIME_SKEW_MS, {
+    message: 'actionTime cannot be in the future',
+    path: ['actionTime'],
+  });
+
+const CorrectDoseActionSchema = z
+  .object({
+    action: z.enum(['TAKEN', 'SKIPPED', 'PENDING', 'MISSED']),
+    notes: z.string().max(500).optional(),
+    skipReason: SkipReasonSchema.optional(),
+  })
+  .refine((v) => v.skipReason === undefined || v.action === 'SKIPPED', {
+    message: 'skipReason is only allowed when action is SKIPPED',
+    path: ['skipReason'],
+  });
 
 const CreateManualMedicationSchema = z.object({
   nameAsWritten: z.string().min(1, 'Medication name is required'),
@@ -182,7 +206,7 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
 
   /**
    * POST /api/v1/medications/doses/:doseId/action
-   * Records explicit patient-reported action (TAKEN, SKIPPED, SNOOZED).
+   * Records explicit patient-reported action (TAKEN, SKIPPED, SNOOZED, MISSED).
    */
   router.post('/doses/:doseId/action', async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -210,17 +234,22 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
         return;
       }
 
-      const { action, notes, snoozeMinutes, actionTime } = parseResult.data;
+      const { action, notes, snoozeMinutes, actionTime, skipReason } = parseResult.data;
       const updated = await medicationService.recordDoseAction(doseId, patientProfileId, action, {
         notes,
         snoozeMinutes,
         actionTime,
+        skipReason,
       });
 
       res.status(200).json({ data: updated, message: `Dose recorded as ${action}` });
     } catch (err: any) {
       if (err.statusCode === 404) {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: err.message } });
+        return;
+      }
+      if (err.statusCode === 400) {
+        res.status(400).json({ error: { code: 'INVALID_ACTION', message: err.message } });
         return;
       }
       next(err);
@@ -257,13 +286,17 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
         return;
       }
 
-      const { action, notes } = parseResult.data;
-      const updated = await medicationService.correctDoseAction(doseId, patientProfileId, action, notes);
+      const { action, notes, skipReason } = parseResult.data;
+      const updated = await medicationService.correctDoseAction(doseId, patientProfileId, action, notes, skipReason);
 
       res.status(200).json({ data: updated, message: 'Dose action corrected' });
     } catch (err: any) {
       if (err.statusCode === 404) {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: err.message } });
+        return;
+      }
+      if (err.statusCode === 400) {
+        res.status(400).json({ error: { code: 'INVALID_ACTION', message: err.message } });
         return;
       }
       next(err);
