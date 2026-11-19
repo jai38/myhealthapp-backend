@@ -157,6 +157,9 @@ export const createApp = (options?: AppOptions): Express => {
 
   // Repositories initialization (PostgreSQL Prisma default in prod/dev, In-Memory test double in unit test mode)
   const useInMemoryDb = process.env.NODE_ENV === 'test' && !process.env.TEST_USE_POSTGRES;
+  const patientProfileRepo: PatientProfileRepository =
+    options?.patientProfileRepo ??
+    (useInMemoryDb ? new InMemoryPatientProfileRepository() : new PrismaPatientProfileRepository());
   const docRepo =
     options?.docRepo ??
     (useInMemoryDb ? new InMemoryDocumentRepository() : new PrismaDocumentRepository());
@@ -253,6 +256,7 @@ export const createApp = (options?: AppOptions): Express => {
     `${env.API_PREFIX}/auth`,
     createAuthRouter(authAdapter, authMiddleware, {
       purgePatientData: (patientProfileId) => documentService.purgeByPatientProfile(patientProfileId),
+      patientProfileRepo,
     })
   );
 
@@ -287,8 +291,7 @@ export const createApp = (options?: AppOptions): Express => {
       timelineRepo,
       medicationRepo,
       documentService,
-      options?.patientProfileRepo ??
-        (useInMemoryDb ? new InMemoryPatientProfileRepository() : new PrismaPatientProfileRepository())
+      patientProfileRepo
     );
 
   app.use(
