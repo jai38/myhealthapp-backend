@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AuthError, AuthProviderAdapter } from './auth-adapter.js';
+import { fieldErrors } from '../../middleware/validation.js';
 
 // bcrypt only uses the first 72 bytes, so longer passwords would be silently truncated.
 const passwordSchema = z
@@ -49,6 +50,7 @@ function validationError(res: Response, error: z.ZodError): void {
     error: {
       code: 'VALIDATION_ERROR',
       message: error.errors.map((e) => e.message).join(', '),
+      fields: fieldErrors(error),
     },
   });
 }

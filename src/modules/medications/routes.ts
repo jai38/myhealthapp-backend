@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { MedicationService } from './medication-service.js';
 import { MedicationStatusType } from '../persistence/repositories.js';
+import { fieldErrors } from '../../middleware/validation.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -82,6 +83,7 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
             code: 'VALIDATION_ERROR',
             message: 'Invalid medication input',
             details: parseResult.error.format(),
+            fields: fieldErrors(parseResult.error),
           },
         });
         return;
@@ -209,6 +211,7 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
             code: 'VALIDATION_ERROR',
             message: 'Invalid dose action input',
             details: parseResult.error.format(),
+            fields: fieldErrors(parseResult.error),
           },
         });
         return;
@@ -256,6 +259,7 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
             code: 'VALIDATION_ERROR',
             message: 'Invalid dose action correction input',
             details: parseResult.error.format(),
+            fields: fieldErrors(parseResult.error),
           },
         });
         return;
@@ -357,6 +361,7 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
             code: 'VALIDATION_ERROR',
             message: 'Invalid medication activation schedule input',
             details: parseResult.error.format(),
+            fields: fieldErrors(parseResult.error),
           },
         });
         return;
@@ -415,6 +420,7 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
             code: 'VALIDATION_ERROR',
             message: 'Invalid schedule preferences input',
             details: parseResult.error.format(),
+            fields: fieldErrors(parseResult.error),
           },
         });
         return;

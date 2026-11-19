@@ -83,6 +83,7 @@ export class ReportService {
       if (isNaN(startD.getTime())) {
         const err = new Error('Invalid start date format. Expected YYYY-MM-DD or ISO timestamp.');
         (err as any).statusCode = 400;
+        (err as any).field = 'startDate';
         throw err;
       }
     }
@@ -92,6 +93,7 @@ export class ReportService {
       if (isNaN(endD.getTime())) {
         const err = new Error('Invalid end date format. Expected YYYY-MM-DD or ISO timestamp.');
         (err as any).statusCode = 400;
+        (err as any).field = 'endDate';
         throw err;
       }
     }
@@ -99,6 +101,7 @@ export class ReportService {
     if (startD && endD && startD > endD) {
       const err = new Error('Invalid date range: Start date cannot be after end date.');
       (err as any).statusCode = 400;
+      (err as any).field = 'startDate';
       throw err;
     }
 

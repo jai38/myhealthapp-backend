@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { TimelineService } from './timeline-service.js';
+import { fieldErrors } from '../../middleware/validation.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -49,6 +50,7 @@ export const createTimelineRouter = (timelineService: TimelineService): Router =
             code: 'INVALID_QUERY_PARAMETERS',
             message: 'Invalid timeline filter parameters',
             details: parseResult.error.format(),
+            fields: fieldErrors(parseResult.error),
           },
         });
         return;

@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { ReportService } from './report-service.js';
 import { generateMedicalReportPdf } from './pdf-generator.js';
+import { fieldErrors } from '../../middleware/validation.js';
 
 const exportConfigSchema = z.object({
   title: z.string().max(100).optional(),
@@ -38,6 +39,7 @@ export const createReportRouter = (reportService: ReportService): Router => {
               code: 'VALIDATION_ERROR',
               message: 'Invalid export options',
               details: validation.error.errors,
+              fields: fieldErrors(validation.error),
             },
           });
           return;
@@ -55,6 +57,7 @@ export const createReportRouter = (reportService: ReportService): Router => {
             error: {
               code: 'VALIDATION_ERROR',
               message: err.message,
+              fields: err.field ? [{ path: err.field, message: err.message }] : [],
             },
           });
           return;
@@ -86,6 +89,7 @@ export const createReportRouter = (reportService: ReportService): Router => {
               code: 'VALIDATION_ERROR',
               message: 'Invalid report configuration options',
               details: validation.error.errors,
+              fields: fieldErrors(validation.error),
             },
           });
           return;
@@ -98,11 +102,22 @@ export const createReportRouter = (reportService: ReportService): Router => {
 
         res.status(201).json({ data: report });
       } catch (err: any) {
-        if (err.statusCode === 400 || err.message?.includes('No eligible medical records')) {
+        if (err.message?.includes('No eligible medical records')) {
           res.status(400).json({
             error: {
               code: 'EMPTY_REPORT_ERROR',
               message: err.message,
+            },
+          });
+          return;
+        }
+        // A bad date or range is a validation error here too, not an empty report.
+        if (err.statusCode === 400) {
+          res.status(400).json({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: err.message,
+              fields: err.field ? [{ path: err.field, message: err.message }] : [],
             },
           });
           return;
@@ -133,6 +148,7 @@ export const createReportRouter = (reportService: ReportService): Router => {
               code: 'VALIDATION_ERROR',
               message: 'Invalid report configuration options',
               details: validation.error.errors,
+              fields: fieldErrors(validation.error),
             },
           });
           return;
@@ -164,6 +180,7 @@ export const createReportRouter = (reportService: ReportService): Router => {
             error: {
               code: 'VALIDATION_ERROR',
               message: err.message,
+              fields: err.field ? [{ path: err.field, message: err.message }] : [],
             },
           });
           return;
