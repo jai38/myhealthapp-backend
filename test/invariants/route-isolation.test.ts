@@ -306,19 +306,25 @@ describe('Invariant: every registered route is isolated per patient', () => {
   });
 
   /**
-   * confirm-upload takes a storage key. The ownership check is a pure string comparison of the
-   * patient segment, so the reply is 403 and is identical whether or not the key exists. That
-   * gives an attacker nothing to enumerate, which is the purpose of the 404 rule. Documented
-   * here so the exception is deliberate and cannot widen.
+   * Rule 4 regression: confirm-upload with another patient's storage key answers 404, never 403,
+   * with one fixed body whether or not the key exists, so nothing can be enumerated. A malformed
+   * key gets the same reply.
    */
-  it('confirm-upload: another patient key gets the same 403 whether or not it exists', async () => {
+  it('confirm-upload: another patient key gets the same 404 whether or not it exists', async () => {
     const real = await send(w.app, 'POST', `${API}/documents/confirm-upload`, TOKEN_B, { storageKey: a.storageKey });
     const ghost = await send(w.app, 'POST', `${API}/documents/confirm-upload`, TOKEN_B, {
       storageKey: `documents/${PATIENT_A}/00000000-0000-4000-8000-000000000000`,
     });
-    expect(real.status).toBe(403);
-    expect(ghost.status).toBe(403);
+    const malformed = await send(w.app, 'POST', `${API}/documents/confirm-upload`, TOKEN_B, {
+      storageKey: '../../etc/passwd',
+    });
+    expect(real.status).toBe(404);
+    expect(real.body).toEqual({ error: { code: 'NOT_FOUND', message: 'Upload not found' } });
+    expect(ghost.status).toBe(404);
     expect(ghost.body).toEqual(real.body);
+    expect(malformed.status).toBe(404);
+    expect(malformed.body).toEqual(real.body);
+    expect(JSON.stringify(real.body)).not.toContain(PATIENT_A);
   });
 });
 

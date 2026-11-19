@@ -110,7 +110,8 @@ describe('Invariant: storage key format', () => {
         .post(`${API}/documents/confirm-upload`)
         .set('Authorization', TOKEN_A)
         .send({ storageKey, mimeType: 'application/pdf' });
-      expect([400, 403, 404]).toContain(res.status);
+      expect(res.status).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
       const list = await request(w.app).get(`${API}/documents`).set('Authorization', TOKEN_A);
       expect(list.body.data).toEqual([]);
     });

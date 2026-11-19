@@ -308,7 +308,7 @@ describe('Blocker A & C: Storage Key Validation, Upload Intent Lifecycle & Retry
       expect(res.body.error.message).toContain('expired');
     });
 
-    it('rejects cross-patient finalization attempts with 403 Forbidden', async () => {
+    it('rejects cross-patient finalization attempts with 404 (rule 4), leaving the intent usable by its owner', async () => {
       const validPdf = await createValidPdfBuffer(1);
       const intentRes = await request(app)
         .post('/api/v1/documents/upload-intent')
@@ -328,8 +328,15 @@ describe('Blocker A & C: Storage Key Validation, Upload Intent Lifecycle & Retry
         .set('Authorization', userBToken)
         .send({ storageKey, mimeType: 'application/pdf' });
 
-      expect(res.status).toBe(403);
-      expect(res.body.error.message).toContain('does not belong to the authenticated patient');
+      expect(res.status).toBe(404);
+      expect(res.body.error).toEqual({ code: 'NOT_FOUND', message: 'Upload not found' });
+
+      // B's attempt must not consume or release A's intent: A can still confirm it.
+      const owner = await request(app)
+        .post('/api/v1/documents/confirm-upload')
+        .set('Authorization', userAToken)
+        .send({ storageKey, mimeType: 'application/pdf' });
+      expect(owner.status).toBe(201);
     });
   });
 });
