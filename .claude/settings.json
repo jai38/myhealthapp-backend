@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "benai-mods": {
+      "source": { "source": "github", "repo": "jai38/benai-mods" }
+    }
+  },
+  "enabledPlugins": {
+    "helper-desk@benai-mods": true,
+    "reflect@benai-mods": true,
+    "brain-dump@benai-mods": true,
+    "handoff@benai-mods": true
+  }
+}
