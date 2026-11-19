@@ -106,6 +106,7 @@ export class DocumentService {
       fileSizeBytes: buffer.length,
       sha256Checksum: checksum,
       status: 'CONFIRMED',
+      kind: 'REPORT',
       pageCount: pageCount !== undefined ? pageCount : undefined,
     });
   }

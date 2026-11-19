@@ -268,12 +268,18 @@ export class ReportService {
   }
 
   /**
-   * Retrieves raw PDF buffer for direct authenticated streaming or download.
+   * Retrieves a stored report's PDF bytes for the authenticated patient. Only server-generated
+   * reports qualify: an uploaded document (a photo, a prescription PDF) is "not found" here, so
+   * this route never streams it under an application/pdf label.
    */
   async getReportBuffer(
     patientProfileId: string,
     documentId: string
   ): Promise<{ buffer: Buffer; doc: DocumentRecord }> {
+    const doc = await this.documentService.getDocument(patientProfileId, documentId);
+    if (doc.kind !== 'REPORT' || doc.mimeType !== 'application/pdf') {
+      throw new Error('Document not found');
+    }
     return this.documentService.getDocumentBuffer(patientProfileId, documentId);
   }
 }

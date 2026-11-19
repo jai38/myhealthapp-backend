@@ -11,6 +11,9 @@ export type DocumentStatus =
 
 export type JobStatus = 'QUEUED' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 
+/** UPLOAD: a file the patient uploaded. REPORT: a PDF the server generated. */
+export type DocumentKind = 'UPLOAD' | 'REPORT';
+
 export interface DocumentRecord {
   id: string;
   patientProfileId: string;
@@ -20,6 +23,8 @@ export interface DocumentRecord {
   fileSizeBytes: number;
   sha256Checksum: string;
   status: DocumentStatus;
+  /** Defaults to UPLOAD when not given on create. */
+  kind?: DocumentKind;
   pageCount?: number;
   imageWidth?: number;
   imageHeight?: number;
@@ -641,6 +646,7 @@ export class PrismaDocumentRepository implements DocumentRepository {
         fileSizeBytes: data.fileSizeBytes,
         sha256Checksum: data.sha256Checksum,
         status: data.status,
+        kind: data.kind ?? 'UPLOAD',
         pageCount: data.pageCount,
         imageWidth: data.imageWidth,
         imageHeight: data.imageHeight,
@@ -1887,6 +1893,7 @@ export class InMemoryDocumentRepository implements DocumentRepository {
     const now = new Date();
     const record: DocumentRecord = {
       ...data,
+      kind: data.kind ?? 'UPLOAD',
       id,
       uploadedAt: now,
       updatedAt: now,

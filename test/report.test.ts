@@ -585,4 +585,42 @@ describe('Phase 5: Medical PDF Reports & Secure Export API', () => {
       expect(text).toContain('Name not recorded');
     });
   });
+
+  describe('Report download serves reports only', () => {
+    it('answers 404 for an uploaded document, PDF or photo, of the same patient', async () => {
+      const { doc: uploadedPdf } = await seedPrescription(patientA, '2026-03-15');
+      const photoId = crypto.randomUUID();
+      const photoKey = `documents/${patientA}/${photoId}`;
+      await storageProvider.putObject(photoKey, patientA, Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg');
+      await docRepo.create({
+        id: photoId,
+        patientProfileId: patientA,
+        storageKey: photoKey,
+        originalFilename: 'rx-photo.jpg',
+        mimeType: 'image/jpeg',
+        fileSizeBytes: 4,
+        sha256Checksum: 'x',
+        status: 'CONFIRMED',
+      });
+
+      for (const id of [uploadedPdf.id, photoId]) {
+        const res = await request(app).get(`/api/v1/reports/${id}/download`).set('Authorization', `Bearer ${tokenPatientA}`);
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe('NOT_FOUND');
+        expect(res.headers['content-type']).not.toContain('application/pdf');
+      }
+    });
+
+    it('stores generated reports as kind REPORT and uploads default to UPLOAD', async () => {
+      const { doc: uploaded } = await seedPrescription(patientA, '2026-03-15');
+      const gen = await request(app).post('/api/v1/reports/generate').set('Authorization', `Bearer ${tokenPatientA}`).send({});
+      expect((await docRepo.findById(gen.body.data.reportId))?.kind).toBe('REPORT');
+      expect((await docRepo.findById(uploaded.id))?.kind).toBe('UPLOAD');
+
+      const list = await request(app).get('/api/v1/documents').set('Authorization', `Bearer ${tokenPatientA}`);
+      const kinds = Object.fromEntries(list.body.data.map((d: any) => [d.id, d.kind]));
+      expect(kinds[gen.body.data.reportId]).toBe('REPORT');
+      expect(kinds[uploaded.id]).toBe('UPLOAD');
+    });
+  });
 });
