@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
-import { MedicationService } from './medication-service.js';
-import { MedicationStatusType } from '../persistence/repositories.js';
+import { MedicationService, ACTION_TIME_SKEW_MS } from './medication-service.js';
+import { MedicationStatusType, SKIP_REASONS } from '../persistence/repositories.js';
 import { fieldErrors } from '../../middleware/validation.js';
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -35,17 +35,37 @@ const DiscontinueSchema = z.object({
   reason: z.string().max(500, 'Reason cannot exceed 500 characters').optional(),
 });
 
-const RecordDoseActionSchema = z.object({
-  action: z.enum(['TAKEN', 'SKIPPED', 'SNOOZED']),
-  notes: z.string().max(500).optional(),
-  snoozeMinutes: z.number().int().min(5).max(120).optional(),
-  actionTime: z.string().datetime().optional(),
-});
+const skipReasonOnlyWhenSkipped = (
+  value: { action: string; skipReason?: string },
+  ctx: z.RefinementCtx
+): void => {
+  if (value.skipReason !== undefined && value.action !== 'SKIPPED') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['skipReason'], message: 'skipReason is only allowed with SKIPPED' });
+  }
+};
 
-const CorrectDoseActionSchema = z.object({
-  action: z.enum(['TAKEN', 'SKIPPED', 'PENDING']),
-  notes: z.string().max(500).optional(),
-});
+const RecordDoseActionSchema = z
+  .object({
+    action: z.enum(['TAKEN', 'SKIPPED', 'SNOOZED', 'MISSED']),
+    notes: z.string().max(500).optional(),
+    snoozeMinutes: z.number().int().min(5).max(120).optional(),
+    actionTime: z.string().datetime().optional(),
+    skipReason: z.enum(SKIP_REASONS).optional(),
+  })
+  .superRefine((value, ctx) => {
+    skipReasonOnlyWhenSkipped(value, ctx);
+    if (value.actionTime && new Date(value.actionTime).getTime() > Date.now() + ACTION_TIME_SKEW_MS) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['actionTime'], message: 'actionTime cannot be in the future' });
+    }
+  });
+
+const CorrectDoseActionSchema = z
+  .object({
+    action: z.enum(['TAKEN', 'SKIPPED', 'MISSED', 'PENDING']),
+    notes: z.string().max(500).optional(),
+    skipReason: z.enum(SKIP_REASONS).optional(),
+  })
+  .superRefine(skipReasonOnlyWhenSkipped);
 
 const CreateManualMedicationSchema = z.object({
   nameAsWritten: z.string().min(1, 'Medication name is required'),
@@ -217,17 +237,22 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
         return;
       }
 
-      const { action, notes, snoozeMinutes, actionTime } = parseResult.data;
+      const { action, notes, snoozeMinutes, actionTime, skipReason } = parseResult.data;
       const updated = await medicationService.recordDoseAction(doseId, patientProfileId, action, {
         notes,
         snoozeMinutes,
         actionTime,
+        skipReason,
       });
 
       res.status(200).json({ data: updated, message: `Dose recorded as ${action}` });
     } catch (err: any) {
       if (err.statusCode === 404) {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: err.message } });
+        return;
+      }
+      if (err.statusCode === 400) {
+        res.status(400).json({ error: { code: 'INVALID_ACTION', message: err.message } });
         return;
       }
       next(err);
@@ -265,13 +290,17 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
         return;
       }
 
-      const { action, notes } = parseResult.data;
-      const updated = await medicationService.correctDoseAction(doseId, patientProfileId, action, notes);
+      const { action, notes, skipReason } = parseResult.data;
+      const updated = await medicationService.correctDoseAction(doseId, patientProfileId, action, { notes, skipReason });
 
       res.status(200).json({ data: updated, message: 'Dose action corrected' });
     } catch (err: any) {
       if (err.statusCode === 404) {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: err.message } });
+        return;
+      }
+      if (err.statusCode === 400) {
+        res.status(400).json({ error: { code: 'INVALID_ACTION', message: err.message } });
         return;
       }
       next(err);
