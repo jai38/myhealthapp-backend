@@ -42,6 +42,8 @@ export interface AuthRouterOptions {
    * Called by DELETE /auth/account before the user row is removed.
    */
   purgePatientData?: (patientProfileId: string) => Promise<unknown>;
+  /** Returns the patient profile's display name, or null/undefined when none is stored. Used by GET /auth/me. */
+  lookupFullName?: (patientProfileId: string) => Promise<string | null | undefined>;
 }
 
 function validationError(res: Response, error: z.ZodError): void {
@@ -266,14 +268,19 @@ export function createAuthRouter(
 
   if (authMiddleware) {
     // GET /auth/me
-    router.get('/me', authMiddleware, (req: Request, res: Response): void => {
-      res.status(200).json({
-        data: {
-          userId: req.authContext!.userId,
-          email: req.authContext!.email,
-          patientProfileId: req.authContext!.patientProfileId,
-        },
-      });
+    router.get('/me', authMiddleware, async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const { userId, email, patientProfileId } = req.authContext!;
+        let fullName: string | null = null;
+        if (options.lookupFullName) {
+          const raw = (await options.lookupFullName(patientProfileId))?.trim();
+          // Sign-up stores the placeholder 'Patient Profile' when no name was given: that is not a name.
+          fullName = raw && raw !== 'Patient Profile' ? raw : null;
+        }
+        res.status(200).json({ data: { userId, email, patientProfileId, fullName } });
+      } catch (err) {
+        next(err);
+      }
     });
 
     // DELETE /auth/account - erases the caller's account and all of their data.

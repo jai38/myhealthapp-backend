@@ -5,6 +5,7 @@ import {
   DoseLogRecord,
   MedicationStatusType,
   DoseStatusType,
+  SkipReasonType,
 } from '../persistence/repositories.js';
 import { DocumentService } from '../documents/document-service.js';
 
@@ -374,11 +375,12 @@ export class MedicationService {
   async recordDoseAction(
     doseLogId: string,
     patientProfileId: string,
-    action: 'TAKEN' | 'SKIPPED' | 'SNOOZED',
+    action: 'TAKEN' | 'SKIPPED' | 'SNOOZED' | 'MISSED',
     meta?: {
       notes?: string;
       snoozeMinutes?: number;
       actionTime?: string;
+      skipReason?: SkipReasonType;
     }
   ): Promise<DoseLogRecord> {
     const doseLog = await this.medicationRepo.getDoseLogById(doseLogId, patientProfileId);
@@ -403,6 +405,7 @@ export class MedicationService {
       {
         snoozeMinutes,
         notes: meta?.notes?.trim() || undefined,
+        skipReason: action === 'SKIPPED' ? meta?.skipReason : undefined,
       }
     );
   }
@@ -414,7 +417,8 @@ export class MedicationService {
     doseLogId: string,
     patientProfileId: string,
     action: DoseStatusType,
-    notes?: string
+    notes?: string,
+    skipReason?: SkipReasonType
   ): Promise<DoseLogRecord> {
     const doseLog = await this.medicationRepo.getDoseLogById(doseLogId, patientProfileId);
     if (!doseLog) {
@@ -428,7 +432,10 @@ export class MedicationService {
       patientProfileId,
       action,
       new Date(),
-      { notes: notes?.trim() || undefined }
+      {
+        notes: notes?.trim() || undefined,
+        skipReason: action === 'SKIPPED' ? skipReason : undefined,
+      }
     );
   }
 

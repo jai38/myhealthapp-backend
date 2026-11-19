@@ -139,6 +139,7 @@ export interface TimelineRepository {
 
 export type MedicationStatusType = 'INACTIVE' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'DISCONTINUED';
 export type DoseStatusType = 'PENDING' | 'TAKEN' | 'SKIPPED' | 'SNOOZED' | 'MISSED';
+export type SkipReasonType = 'FELT_UNWELL' | 'DOCTOR_ADVISED' | 'RAN_OUT' | 'SIDE_EFFECTS' | 'OTHER';
 
 export interface MedicationRecord {
   id: string;
@@ -173,6 +174,7 @@ export interface DoseLogRecord {
   actionTime?: Date | null;
   snoozeMinutes?: number | null;
   notes?: string | null;
+  skipReason?: SkipReasonType | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -235,7 +237,7 @@ export interface MedicationRepository {
     patientProfileId: string,
     status: DoseStatusType,
     actionTime: Date,
-    meta?: { snoozeMinutes?: number; notes?: string }
+    meta?: { snoozeMinutes?: number; notes?: string; skipReason?: SkipReasonType }
   ): Promise<DoseLogRecord>;
   cancelPendingDosesForMedication(medicationId: string, patientProfileId: string, fromDate?: Date): Promise<number>;
 }
@@ -1511,6 +1513,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
         actionTime: dl.actionTime ?? undefined,
         snoozeMinutes: dl.snoozeMinutes ?? undefined,
         notes: dl.notes ?? undefined,
+        skipReason: (dl.skipReason as SkipReasonType | null) ?? undefined,
         createdAt: dl.createdAt,
         updatedAt: dl.updatedAt,
       })),
@@ -1603,6 +1606,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
       actionTime: dl.actionTime ?? undefined,
       snoozeMinutes: dl.snoozeMinutes ?? undefined,
       notes: dl.notes ?? undefined,
+      skipReason: (dl.skipReason as SkipReasonType | null) ?? undefined,
       createdAt: dl.createdAt,
       updatedAt: dl.updatedAt,
     }));
@@ -1626,6 +1630,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
       actionTime: dl.actionTime ?? undefined,
       snoozeMinutes: dl.snoozeMinutes ?? undefined,
       notes: dl.notes ?? undefined,
+      skipReason: (dl.skipReason as SkipReasonType | null) ?? undefined,
       createdAt: dl.createdAt,
       updatedAt: dl.updatedAt,
     }));
@@ -1645,6 +1650,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
       actionTime: dl.actionTime ?? undefined,
       snoozeMinutes: dl.snoozeMinutes ?? undefined,
       notes: dl.notes ?? undefined,
+      skipReason: (dl.skipReason as SkipReasonType | null) ?? undefined,
       createdAt: dl.createdAt,
       updatedAt: dl.updatedAt,
     };
@@ -1655,7 +1661,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
     patientProfileId: string,
     status: DoseStatusType,
     actionTime: Date,
-    meta?: { snoozeMinutes?: number; notes?: string }
+    meta?: { snoozeMinutes?: number; notes?: string; skipReason?: SkipReasonType }
   ): Promise<DoseLogRecord> {
     const existing = await this.prisma.doseLog.findFirst({
       where: { id, patientProfileId },
@@ -1671,6 +1677,8 @@ export class PrismaMedicationRepository implements MedicationRepository {
         actionTime,
         snoozeMinutes: meta?.snoozeMinutes,
         notes: meta?.notes,
+        // A reason only belongs to a SKIPPED dose; any other status clears it.
+        skipReason: status === 'SKIPPED' ? (meta?.skipReason ?? null) : null,
       },
     });
 
@@ -1683,6 +1691,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
       actionTime: updated.actionTime ?? undefined,
       snoozeMinutes: updated.snoozeMinutes ?? undefined,
       notes: updated.notes ?? undefined,
+      skipReason: (updated.skipReason as SkipReasonType | null) ?? undefined,
       createdAt: updated.createdAt,
       updatedAt: updated.updatedAt,
     };
@@ -2532,7 +2541,7 @@ export class InMemoryMedicationRepository implements MedicationRepository {
     patientProfileId: string,
     status: DoseStatusType,
     actionTime: Date,
-    meta?: { snoozeMinutes?: number; notes?: string }
+    meta?: { snoozeMinutes?: number; notes?: string; skipReason?: SkipReasonType }
   ): Promise<DoseLogRecord> {
     const dl = this.doseLogs.get(id);
     if (!dl || dl.patientProfileId !== patientProfileId) {
@@ -2545,6 +2554,7 @@ export class InMemoryMedicationRepository implements MedicationRepository {
       actionTime,
       snoozeMinutes: meta?.snoozeMinutes,
       notes: meta?.notes,
+      skipReason: status === 'SKIPPED' ? (meta?.skipReason ?? null) : null,
       updatedAt: new Date(),
     };
     this.doseLogs.set(id, updated);
