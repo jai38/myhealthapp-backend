@@ -248,6 +248,10 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
         res.status(404).json({ error: { code: 'NOT_FOUND', message: err.message } });
         return;
       }
+      if (err.statusCode === 400) {
+        res.status(400).json({ error: { code: 'INVALID_ACTION', message: err.message } });
+        return;
+      }
       next(err);
     }
   });
@@ -289,6 +293,10 @@ export const createMedicationRouter = (medicationService: MedicationService): Ro
     } catch (err: any) {
       if (err.statusCode === 404) {
         res.status(404).json({ error: { code: 'NOT_FOUND', message: err.message } });
+        return;
+      }
+      if (err.statusCode === 400) {
+        res.status(400).json({ error: { code: 'INVALID_ACTION', message: err.message } });
         return;
       }
       next(err);

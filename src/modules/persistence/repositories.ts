@@ -236,7 +236,7 @@ export interface MedicationRepository {
     id: string,
     patientProfileId: string,
     status: DoseStatusType,
-    actionTime: Date,
+    actionTime: Date | null,
     meta?: { snoozeMinutes?: number; notes?: string; skipReason?: SkipReasonType }
   ): Promise<DoseLogRecord>;
   cancelPendingDosesForMedication(medicationId: string, patientProfileId: string, fromDate?: Date): Promise<number>;
@@ -1660,7 +1660,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
     id: string,
     patientProfileId: string,
     status: DoseStatusType,
-    actionTime: Date,
+    actionTime: Date | null,
     meta?: { snoozeMinutes?: number; notes?: string; skipReason?: SkipReasonType }
   ): Promise<DoseLogRecord> {
     const existing = await this.prisma.doseLog.findFirst({
@@ -1675,8 +1675,9 @@ export class PrismaMedicationRepository implements MedicationRepository {
       data: {
         status,
         actionTime,
-        snoozeMinutes: meta?.snoozeMinutes,
-        notes: meta?.notes,
+        // Fields left out are cleared, so a correction never keeps a stale value.
+        snoozeMinutes: meta?.snoozeMinutes ?? null,
+        notes: meta?.notes ?? null,
         // A reason only belongs to a SKIPPED dose; any other status clears it.
         skipReason: status === 'SKIPPED' ? (meta?.skipReason ?? null) : null,
       },
@@ -2540,10 +2541,10 @@ export class InMemoryMedicationRepository implements MedicationRepository {
     id: string,
     patientProfileId: string,
     status: DoseStatusType,
-    actionTime: Date,
+    actionTime: Date | null,
     meta?: { snoozeMinutes?: number; notes?: string; skipReason?: SkipReasonType }
   ): Promise<DoseLogRecord> {
-    const dl = this.doseLogs.get(id);
+    const dl =this.doseLogs.get(id);
     if (!dl || dl.patientProfileId !== patientProfileId) {
       throw new Error('Dose log not found');
     }

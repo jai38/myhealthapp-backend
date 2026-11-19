@@ -91,6 +91,37 @@ describe('Phase 4b task 16: dose actions and /auth/me', () => {
       expect((await medicationRepo.getDoseLogById(id, patientA))!.status).toBe('PENDING');
     });
 
+    it('Undo (PENDING) clears action time, snooze, skip reason and notes', async () => {
+      const id = await createDose();
+      await post(id, { action: 'SNOOZED', snoozeMinutes: 30, notes: 'later' });
+      const res = await patch(id, { action: 'PENDING' });
+      expect(res.status).toBe(200);
+      const dose = (await medicationRepo.getDoseLogById(id, patientA))!;
+      expect(dose.status).toBe('PENDING');
+      expect(dose.actionTime ?? null).toBeNull();
+      expect(dose.snoozeMinutes ?? null).toBeNull();
+      expect(dose.notes ?? null).toBeNull();
+      expect(dose.skipReason ?? null).toBeNull();
+    });
+
+    it('MISSED on a dose that is not due yet is refused with 400 INVALID_ACTION and changes nothing', async () => {
+      const med = await medicationRepo.createMedication({
+        patientProfileId: patientA,
+        nameAsWritten: 'Tab Future 5mg',
+        dosageForm: 'TABLET',
+        status: 'ACTIVE',
+      });
+      const [dose] = await medicationRepo.createDoseLogs([
+        { medicationId: med.id, patientProfileId: patientA, scheduledTime: new Date(Date.now() + 3 * 60 * 60 * 1000) },
+      ]);
+      for (const send of [post, patch]) {
+        const res = await send(dose!.id, { action: 'MISSED' });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe('INVALID_ACTION');
+      }
+      expect((await medicationRepo.getDoseLogById(dose!.id, patientA))!.status).toBe('PENDING');
+    });
+
     it('an unrecorded past dose stays PENDING: reading doses never marks it MISSED', async () => {
       const id = await createDose();
       const list = await request(app)
@@ -116,7 +147,7 @@ describe('Phase 4b task 16: dose actions and /auth/me', () => {
         .map((f) => f.replace(/\\/g, '/'));
       expect(callers).toEqual(['src/modules/medications/medication-service.ts']);
       const svc = readFileSync('src/modules/medications/medication-service.ts', 'utf8');
-      expect(svc.match(/\.updateDoseAction\(/g)).toHaveLength(2); // recordDoseAction + correctDoseAction
+      expect(svc.match(/\.updateDoseAction\(/g)).toHaveLength(3); // recordDoseAction + correctDoseAction
     });
 
     it('still rejects unknown actions', async () => {

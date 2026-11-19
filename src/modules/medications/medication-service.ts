@@ -392,6 +392,7 @@ export class MedicationService {
     }
 
     const actionTimestamp = meta?.actionTime ? new Date(meta.actionTime) : new Date();
+    if (action === 'MISSED') this.assertDoseIsDue(doseLog);
 
     let snoozeMinutes = meta?.snoozeMinutes;
     if (action === 'SNOOZED') {
@@ -411,6 +412,15 @@ export class MedicationService {
     );
   }
 
+  /** MISSED only makes sense for a dose that is already due. */
+  private assertDoseIsDue(dose: DoseLogRecord): void {
+    if (dose.scheduledTime.getTime() > Date.now()) {
+      const err = new Error('A dose cannot be marked missed before it is due');
+      (err as any).statusCode = 400;
+      throw err;
+    }
+  }
+
   /**
    * Corrects a previously recorded dose action if the patient made a mistake.
    */
@@ -426,6 +436,13 @@ export class MedicationService {
       const err = new Error('Dose log record not found');
       (err as any).statusCode = 404;
       throw err;
+    }
+
+    if (action === 'MISSED') this.assertDoseIsDue(doseLog);
+
+    // PENDING is Undo: no action time, snooze, reason or notes survive.
+    if (action === 'PENDING') {
+      return this.medicationRepo.updateDoseAction(doseLogId, patientProfileId, 'PENDING', null);
     }
 
     return this.medicationRepo.updateDoseAction(
