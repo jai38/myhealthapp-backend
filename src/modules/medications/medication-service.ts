@@ -369,7 +369,8 @@ export class MedicationService {
   /**
    * Records an explicit patient-reported action for a dose occurrence.
    * CLINICAL SAFETY:
-   * - Dose actions MUST be explicitly selected by the patient (TAKEN, SKIPPED, SNOOZED).
+   * - Dose actions MUST be explicitly selected by the patient (TAKEN, SKIPPED, SNOOZED, MISSED).
+   * - MISSED is never set automatically; an unrecorded past dose stays PENDING.
    * - Viewing or receiving a notification does not record a dose action.
    */
   async recordDoseAction(

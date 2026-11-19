@@ -273,9 +273,14 @@ export function createAuthRouter(
         const { userId, email, patientProfileId } = req.authContext!;
         let fullName: string | null = null;
         if (options.lookupFullName) {
-          const raw = (await options.lookupFullName(patientProfileId))?.trim();
-          // Sign-up stores the placeholder 'Patient Profile' when no name was given: that is not a name.
-          fullName = raw && raw !== 'Patient Profile' ? raw : null;
+          try {
+            const raw = (await options.lookupFullName(patientProfileId))?.trim();
+            // Sign-up stores the placeholder 'Patient Profile' when no name was given: that is not a name.
+            fullName = raw && raw !== 'Patient Profile' ? raw : null;
+          } catch {
+            // The name is a convenience: a failed lookup must not break session bootstrap. No details logged.
+            fullName = null;
+          }
         }
         res.status(200).json({ data: { userId, email, patientProfileId, fullName } });
       } catch (err) {

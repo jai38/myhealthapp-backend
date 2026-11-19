@@ -228,6 +228,14 @@ describe('Phase 4b task 16: dose actions and /auth/me', () => {
       expect(res.body.data.fullName).toBeNull();
     });
 
+    it('returns fullName null instead of failing when the lookup throws', async () => {
+      lookedUpName = undefined;
+      const failing = createApp({ authAdapter: undefined, lookupFullName: async () => { throw new Error('db down'); } });
+      const res = await request(failing).get('/api/v1/auth/me').set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body.data.fullName).toBeNull();
+    });
+
     it('still requires authentication', async () => {
       expect((await request(app).get('/api/v1/auth/me')).status).toBe(401);
     });
