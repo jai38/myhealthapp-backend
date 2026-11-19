@@ -180,6 +180,37 @@ describe('Prescription Extraction Job Lifecycle & Patient Confirmation', () => {
     expect(finalJob?.status).toBe('CANCELLED');
   });
 
+  it('refuses to cancel a SUCCEEDED job with 400, not 500, and leaves it SUCCEEDED', async () => {
+    const app = createApp({
+      storageProvider,
+      docRepo,
+      jobRepo,
+      prescriptionRepo,
+      extractionProvider: new MockPrescriptionExtractionProvider({ mode: 'CLEAN' }),
+    });
+    const documentId = await uploadTestDocument(app);
+    const submitRes = await request(app)
+      .post('/api/v1/prescriptions/extract-job')
+      .set('Authorization', userAToken)
+      .send({ documentId });
+    const jobId = submitRes.body.data.id;
+    expect((await jobRepo.findById(jobId))?.status).toBe('SUCCEEDED');
+
+    const cancelRes = await request(app)
+      .post(`/api/v1/prescriptions/extract-job/${jobId}/cancel`)
+      .set('Authorization', userAToken);
+
+    expect(cancelRes.status).toBe(400);
+    expect(cancelRes.body.error).toEqual({ code: 'BAD_REQUEST', message: 'Cannot cancel a completed or confirmed job' });
+    expect((await jobRepo.findById(jobId))?.status).toBe('SUCCEEDED');
+
+    // Another patient still gets 404 for the same job.
+    const other = await request(app)
+      .post(`/api/v1/prescriptions/extract-job/${jobId}/cancel`)
+      .set('Authorization', userBToken);
+    expect(other.status).toBe(404);
+  });
+
   it('handles provider failures with bounded retries up to max 3 attempts and marks FAILED', async () => {
     const failingProvider = new MockPrescriptionExtractionProvider({ mode: 'PROVIDER_ERROR' });
     const app = createApp({

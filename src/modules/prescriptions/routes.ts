@@ -129,8 +129,9 @@ export function createPrescriptionRouter(
         res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Extraction job not found' } });
         return;
       }
-      if (msg.includes('Cannot cancel an already succeeded job')) {
-        res.status(400).json({ error: { code: 'BAD_REQUEST', message: msg } });
+      // Both repositories throw this for a SUCCEEDED or confirmed job.
+      if (msg.includes('Cannot cancel a completed or confirmed job')) {
+        res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Cannot cancel a completed or confirmed job' } });
         return;
       }
       next(err);
