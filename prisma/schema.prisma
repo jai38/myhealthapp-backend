@@ -63,6 +63,15 @@ enum DoseStatus {
   MISSED
 }
 
+/// Why the patient skipped a dose, chosen from a fixed list so it never lives in free text.
+enum SkipReason {
+  FELT_UNWELL
+  DOCTOR_ADVISED
+  RAN_OUT
+  SIDE_EFFECTS
+  OTHER
+}
+
 enum MedicationStatus {
   INACTIVE
   ACTIVE
@@ -324,6 +333,7 @@ model DoseLog {
   status           DoseStatus @default(PENDING)
   actionTime       DateTime?  @map("action_time")
   snoozeMinutes    Int?       @map("snooze_minutes")
+  skipReason       SkipReason? @map("skip_reason")
   notes            String?
   createdAt        DateTime   @default(now()) @map("created_at")
   updatedAt        DateTime   @updatedAt @map("updated_at")

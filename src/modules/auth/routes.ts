@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AuthError, AuthProviderAdapter } from './auth-adapter.js';
 import { fieldErrors } from '../../middleware/validation.js';
+import type { PatientProfileRepository } from '../persistence/repositories.js';
 
 // bcrypt only uses the first 72 bytes, so longer passwords would be silently truncated.
 const passwordSchema = z
@@ -43,6 +44,8 @@ export interface AuthRouterOptions {
    * Called by DELETE /auth/account before the user row is removed.
    */
   purgePatientData?: (patientProfileId: string) => Promise<unknown>;
+  /** Supplies fullName for GET /auth/me. Without it, fullName is left out. */
+  patientProfileRepo?: PatientProfileRepository;
 }
 
 function validationError(res: Response, error: z.ZodError): void {
@@ -268,14 +271,15 @@ export function createAuthRouter(
 
   if (authMiddleware) {
     // GET /auth/me
-    router.get('/me', authMiddleware, (req: Request, res: Response): void => {
-      res.status(200).json({
-        data: {
-          userId: req.authContext!.userId,
-          email: req.authContext!.email,
-          patientProfileId: req.authContext!.patientProfileId,
-        },
-      });
+    router.get('/me', authMiddleware, async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+      try {
+        const { userId, email, patientProfileId } = req.authContext!;
+        // The patient's own name, looked up by the token's profile id. Left out when none was given.
+        const fullName = (await options.patientProfileRepo?.findFullName(patientProfileId)) ?? undefined;
+        res.status(200).json({ data: { userId, email, patientProfileId, ...(fullName ? { fullName } : {}) } });
+      } catch (err) {
+        next(err);
+      }
     });
 
     // DELETE /auth/account - erases the caller's account and all of their data.

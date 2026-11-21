@@ -145,6 +145,19 @@ export interface TimelineRepository {
 export type MedicationStatusType = 'INACTIVE' | 'ACTIVE' | 'PAUSED' | 'COMPLETED' | 'DISCONTINUED';
 export type DoseStatusType = 'PENDING' | 'TAKEN' | 'SKIPPED' | 'SNOOZED' | 'MISSED';
 
+export const SKIP_REASONS = ['FELT_UNWELL', 'DOCTOR_ADVISED', 'RAN_OUT', 'SIDE_EFFECTS', 'OTHER'] as const;
+export type SkipReasonType = (typeof SKIP_REASONS)[number];
+
+/** What a dose action writes. Fields left out are cleared, so no stale value survives a correction. */
+export interface DoseActionUpdate {
+  status: DoseStatusType;
+  /** null for PENDING (Undo): an unrecorded dose has no action time. */
+  actionTime: Date | null;
+  snoozeMinutes?: number;
+  skipReason?: SkipReasonType;
+  notes?: string;
+}
+
 export interface MedicationRecord {
   id: string;
   patientProfileId: string;
@@ -177,6 +190,7 @@ export interface DoseLogRecord {
   status: DoseStatusType;
   actionTime?: Date | null;
   snoozeMinutes?: number | null;
+  skipReason?: SkipReasonType | null;
   notes?: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -238,9 +252,7 @@ export interface MedicationRepository {
   updateDoseAction(
     id: string,
     patientProfileId: string,
-    status: DoseStatusType,
-    actionTime: Date,
-    meta?: { snoozeMinutes?: number; notes?: string }
+    update: DoseActionUpdate
   ): Promise<DoseLogRecord>;
   cancelPendingDosesForMedication(medicationId: string, patientProfileId: string, fromDate?: Date): Promise<number>;
 }
@@ -385,6 +397,8 @@ export class PrismaPatientProfileRepository implements PatientProfileRepository 
   constructor(private readonly prisma: PrismaClient = getPrismaClient()) {}
 
   async findFullName(patientProfileId: string): Promise<string | null> {
+    // The auth middleware can fall back to a non-UUID id; Postgres would reject it as a uuid.
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(patientProfileId)) return null;
     const profile = await this.prisma.patientProfile.findUnique({
       where: { id: patientProfileId },
       select: { fullName: true },
@@ -1543,6 +1557,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
         status: dl.status as DoseStatusType,
         actionTime: dl.actionTime ?? undefined,
         snoozeMinutes: dl.snoozeMinutes ?? undefined,
+        skipReason: (dl.skipReason as SkipReasonType | null) ?? undefined,
         notes: dl.notes ?? undefined,
         createdAt: dl.createdAt,
         updatedAt: dl.updatedAt,
@@ -1635,6 +1650,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
       status: dl.status as DoseStatusType,
       actionTime: dl.actionTime ?? undefined,
       snoozeMinutes: dl.snoozeMinutes ?? undefined,
+      skipReason: (dl.skipReason as SkipReasonType | null) ?? undefined,
       notes: dl.notes ?? undefined,
       createdAt: dl.createdAt,
       updatedAt: dl.updatedAt,
@@ -1658,6 +1674,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
       status: dl.status as DoseStatusType,
       actionTime: dl.actionTime ?? undefined,
       snoozeMinutes: dl.snoozeMinutes ?? undefined,
+      skipReason: (dl.skipReason as SkipReasonType | null) ?? undefined,
       notes: dl.notes ?? undefined,
       createdAt: dl.createdAt,
       updatedAt: dl.updatedAt,
@@ -1677,6 +1694,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
       status: dl.status as DoseStatusType,
       actionTime: dl.actionTime ?? undefined,
       snoozeMinutes: dl.snoozeMinutes ?? undefined,
+      skipReason: (dl.skipReason as SkipReasonType | null) ?? undefined,
       notes: dl.notes ?? undefined,
       createdAt: dl.createdAt,
       updatedAt: dl.updatedAt,
@@ -1686,9 +1704,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
   async updateDoseAction(
     id: string,
     patientProfileId: string,
-    status: DoseStatusType,
-    actionTime: Date,
-    meta?: { snoozeMinutes?: number; notes?: string }
+    update: DoseActionUpdate
   ): Promise<DoseLogRecord> {
     const existing = await this.prisma.doseLog.findFirst({
       where: { id, patientProfileId },
@@ -1700,10 +1716,11 @@ export class PrismaMedicationRepository implements MedicationRepository {
     const updated = await this.prisma.doseLog.update({
       where: { id },
       data: {
-        status,
-        actionTime,
-        snoozeMinutes: meta?.snoozeMinutes,
-        notes: meta?.notes,
+        status: update.status,
+        actionTime: update.actionTime,
+        snoozeMinutes: update.snoozeMinutes ?? null,
+        skipReason: update.skipReason ?? null,
+        notes: update.notes ?? null,
       },
     });
 
@@ -1715,6 +1732,7 @@ export class PrismaMedicationRepository implements MedicationRepository {
       status: updated.status as DoseStatusType,
       actionTime: updated.actionTime ?? undefined,
       snoozeMinutes: updated.snoozeMinutes ?? undefined,
+      skipReason: (updated.skipReason as SkipReasonType | null) ?? undefined,
       notes: updated.notes ?? undefined,
       createdAt: updated.createdAt,
       updatedAt: updated.updatedAt,
@@ -2576,9 +2594,7 @@ export class InMemoryMedicationRepository implements MedicationRepository {
   async updateDoseAction(
     id: string,
     patientProfileId: string,
-    status: DoseStatusType,
-    actionTime: Date,
-    meta?: { snoozeMinutes?: number; notes?: string }
+    update: DoseActionUpdate
   ): Promise<DoseLogRecord> {
     const dl = this.doseLogs.get(id);
     if (!dl || dl.patientProfileId !== patientProfileId) {
@@ -2587,10 +2603,11 @@ export class InMemoryMedicationRepository implements MedicationRepository {
 
     const updated: DoseLogRecord = {
       ...dl,
-      status,
-      actionTime,
-      snoozeMinutes: meta?.snoozeMinutes,
-      notes: meta?.notes,
+      status: update.status,
+      actionTime: update.actionTime ?? undefined,
+      snoozeMinutes: update.snoozeMinutes,
+      skipReason: update.skipReason,
+      notes: update.notes,
       updatedAt: new Date(),
     };
     this.doseLogs.set(id, updated);

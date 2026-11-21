@@ -4,9 +4,32 @@ import {
   MedicationDetailRecord,
   DoseLogRecord,
   MedicationStatusType,
-  DoseStatusType,
+  SkipReasonType,
 } from '../persistence/repositories.js';
 import { DocumentService } from '../documents/document-service.js';
+
+/** Phone clocks drift: an actionTime up to this far ahead of the server clock still counts as now. */
+export const ACTION_TIME_SKEW_MS = 120_000;
+
+function invalidAction(message: string): Error {
+  const err = new Error(message);
+  (err as any).statusCode = 400;
+  return err;
+}
+
+/** A dose can't be recorded as acted on in the future. */
+function assertNotInFuture(actionTime: Date, now: Date): void {
+  if (actionTime.getTime() > now.getTime() + ACTION_TIME_SKEW_MS) {
+    throw invalidAction('actionTime cannot be in the future');
+  }
+}
+
+/** Missed only makes sense for a dose that is already due. */
+function assertDoseIsDue(dose: DoseLogRecord, now: Date): void {
+  if (dose.scheduledTime.getTime() > now.getTime()) {
+    throw invalidAction('A dose cannot be marked missed before it is due');
+  }
+}
 
 export interface MedicationDocumentUrlResponse {
   signedUrl: string;
@@ -371,14 +394,19 @@ export class MedicationService {
    * - Dose actions MUST be explicitly selected by the patient (TAKEN, SKIPPED, SNOOZED).
    * - Viewing or receiving a notification does not record a dose action.
    */
+  /**
+   * Records an explicit patient action on one dose. Only a patient's tap calls this: nothing here
+   * runs from a notification, and MISSED is only ever the patient's own "No, I missed it".
+   */
   async recordDoseAction(
     doseLogId: string,
     patientProfileId: string,
-    action: 'TAKEN' | 'SKIPPED' | 'SNOOZED',
+    action: 'TAKEN' | 'SKIPPED' | 'SNOOZED' | 'MISSED',
     meta?: {
       notes?: string;
       snoozeMinutes?: number;
       actionTime?: string;
+      skipReason?: SkipReasonType;
     }
   ): Promise<DoseLogRecord> {
     const doseLog = await this.medicationRepo.getDoseLogById(doseLogId, patientProfileId);
@@ -388,33 +416,38 @@ export class MedicationService {
       throw err;
     }
 
-    const actionTimestamp = meta?.actionTime ? new Date(meta.actionTime) : new Date();
+    const now = new Date();
+    const actionTimestamp = meta?.actionTime ? new Date(meta.actionTime) : now;
+    // The route refuses a future actionTime; checked again here so no caller can bypass it.
+    assertNotInFuture(actionTimestamp, now);
+    if (action === 'MISSED') assertDoseIsDue(doseLog, now);
 
-    let snoozeMinutes = meta?.snoozeMinutes;
+    let snoozeMinutes: number | undefined;
     if (action === 'SNOOZED') {
-      snoozeMinutes = Math.min(Math.max(snoozeMinutes ?? 15, 5), 120);
+      snoozeMinutes = Math.min(Math.max(meta?.snoozeMinutes ?? 15, 5), 120);
     }
 
-    return this.medicationRepo.updateDoseAction(
-      doseLogId,
-      patientProfileId,
-      action,
-      actionTimestamp,
-      {
-        snoozeMinutes,
-        notes: meta?.notes?.trim() || undefined,
-      }
-    );
+    return this.medicationRepo.updateDoseAction(doseLogId, patientProfileId, {
+      status: action,
+      actionTime: actionTimestamp,
+      snoozeMinutes,
+      skipReason: action === 'SKIPPED' ? meta?.skipReason : undefined,
+      notes: meta?.notes?.trim() || undefined,
+    });
   }
 
   /**
    * Corrects a previously recorded dose action if the patient made a mistake.
    */
+  /**
+   * Replaces a recorded action. PENDING is Undo: it clears the action time, skip reason, snooze
+   * and notes, so the dose is "Not confirmed" again and never keeps a Missed or Taken trace.
+   */
   async correctDoseAction(
     doseLogId: string,
     patientProfileId: string,
-    action: DoseStatusType,
-    notes?: string
+    action: 'TAKEN' | 'SKIPPED' | 'MISSED' | 'PENDING',
+    meta?: { notes?: string; skipReason?: SkipReasonType }
   ): Promise<DoseLogRecord> {
     const doseLog = await this.medicationRepo.getDoseLogById(doseLogId, patientProfileId);
     if (!doseLog) {
@@ -423,13 +456,22 @@ export class MedicationService {
       throw err;
     }
 
-    return this.medicationRepo.updateDoseAction(
-      doseLogId,
-      patientProfileId,
-      action,
-      new Date(),
-      { notes: notes?.trim() || undefined }
-    );
+    const now = new Date();
+    if (action === 'MISSED') assertDoseIsDue(doseLog, now);
+
+    if (action === 'PENDING') {
+      return this.medicationRepo.updateDoseAction(doseLogId, patientProfileId, {
+        status: 'PENDING',
+        actionTime: null,
+      });
+    }
+
+    return this.medicationRepo.updateDoseAction(doseLogId, patientProfileId, {
+      status: action,
+      actionTime: now,
+      skipReason: action === 'SKIPPED' ? meta?.skipReason : undefined,
+      notes: meta?.notes?.trim() || undefined,
+    });
   }
 
   /**
