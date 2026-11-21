@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { DocumentService } from './document-service.js';
+import { StorageKeyError } from '../storage/storage-keys.js';
 
 const getParamString = (param: string | string[] | undefined): string => {
   if (Array.isArray(param)) return param[0] || '';
@@ -67,11 +68,13 @@ export function createDocumentRouter(documentService: DocumentService): Router {
       res.status(201).json({ data: record });
       return;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Upload confirmation failed';
-      if (msg.includes('Forbidden') || msg.includes('does not belong')) {
-        res.status(403).json({ error: { code: 'FORBIDDEN', message: msg } });
+      // A malformed key or another patient's key gets one fixed 404, whether or not the object
+      // exists, so the reply reveals nothing about other patients (rule 4).
+      if (err instanceof StorageKeyError) {
+        res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Upload not found' } });
         return;
       }
+      const msg = err instanceof Error ? err.message : 'Upload confirmation failed';
       if (
         msg.includes('Integrity check failed') ||
         msg.includes('File signature') ||

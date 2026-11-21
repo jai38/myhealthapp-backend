@@ -205,8 +205,8 @@ describe('Storage, Document Upload Security & Integrity', () => {
         storageKey: userBStorageKey,
         mimeType: 'application/pdf',
       });
-    expect(hijackRes.status).toBe(403);
-    expect(hijackRes.body.error.code).toBe('FORBIDDEN');
+    expect(hijackRes.status).toBe(404);
+    expect(hijackRes.body.error.code).toBe('NOT_FOUND');
 
     // Path traversal attempt
     const traversalRes = await request(app)
@@ -216,7 +216,7 @@ describe('Storage, Document Upload Security & Integrity', () => {
         storageKey: '../../etc/passwd',
         mimeType: 'application/pdf',
       });
-    expect(traversalRes.status).toBe(403);
+    expect(traversalRes.status).toBe(404);
   });
 
   it('rejects fake PDF headers (magic bytes %PDF followed by corrupted payload) via parser validation', async () => {

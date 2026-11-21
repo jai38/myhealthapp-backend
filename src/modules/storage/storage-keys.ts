@@ -1,29 +1,40 @@
 import { S3ClientConfig } from '@aws-sdk/client-s3';
 
 /**
+ * Thrown when a storage key is malformed or names another patient. Routes answer it with 404, never
+ * 403, so a caller cannot tell another patient's key from one that does not exist (rule 4).
+ */
+export class StorageKeyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StorageKeyError';
+  }
+}
+
+/**
  * Validates that storageKey strictly follows the format:
  * documents/<patientProfileId>/<uuid>
  * Prevents path traversal, forged tenant IDs, and arbitrary keys.
  */
 export function validateStorageKey(storageKey: string, expectedPatientProfileId: string): void {
   if (!storageKey || typeof storageKey !== 'string') {
-    throw new Error('Invalid storage key');
+    throw new StorageKeyError('Invalid storage key');
   }
 
   if (!expectedPatientProfileId) {
-    throw new Error('Patient profile ID is required for storage key validation');
+    throw new StorageKeyError('Patient profile ID is required for storage key validation');
   }
 
   const parts = storageKey.split('/');
   if (parts.length !== 3 || parts[0] !== 'documents' || parts[1] !== expectedPatientProfileId) {
-    throw new Error('Forbidden: Storage key does not belong to the authenticated patient profile');
+    throw new StorageKeyError('Forbidden: Storage key does not belong to the authenticated patient profile');
   }
 
   // Validate UUID segment
   const keyUuid = parts[2];
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!keyUuid || !uuidRegex.test(keyUuid)) {
-    throw new Error('Forbidden: Storage key has an invalid format');
+    throw new StorageKeyError('Forbidden: Storage key has an invalid format');
   }
 }
 

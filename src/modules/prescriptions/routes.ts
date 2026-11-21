@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { ExtractionJobQueue } from '../ai-extraction/job-queue.js';
 import { PrescriptionService } from './prescription-service.js';
 import { PatientPrescriptionReviewSchema } from './schemas.js';
+import { fieldErrors } from '../../middleware/validation.js';
 
 const getParamString = (param: string | string[] | undefined): string => {
   if (Array.isArray(param)) return param[0] || '';
@@ -129,8 +130,9 @@ export function createPrescriptionRouter(
         res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Extraction job not found' } });
         return;
       }
-      if (msg.includes('Cannot cancel an already succeeded job')) {
-        res.status(400).json({ error: { code: 'BAD_REQUEST', message: msg } });
+      // Both repositories throw this for a SUCCEEDED or confirmed job.
+      if (msg.includes('Cannot cancel a completed or confirmed job')) {
+        res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Cannot cancel a completed or confirmed job' } });
         return;
       }
       next(err);
@@ -157,6 +159,7 @@ export function createPrescriptionRouter(
             code: 'VALIDATION_ERROR',
             message: 'Invalid prescription review payload',
             details: parseResult.error.format(),
+            fields: fieldErrors(parseResult.error),
           },
         });
         return;

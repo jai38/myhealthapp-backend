@@ -11,6 +11,9 @@ export type DocumentStatus =
 
 export type JobStatus = 'QUEUED' | 'PROCESSING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 
+/** UPLOAD: a file the patient uploaded. REPORT: a PDF the server generated. */
+export type DocumentKind = 'UPLOAD' | 'REPORT';
+
 export interface DocumentRecord {
   id: string;
   patientProfileId: string;
@@ -20,6 +23,8 @@ export interface DocumentRecord {
   fileSizeBytes: number;
   sha256Checksum: string;
   status: DocumentStatus;
+  /** Defaults to UPLOAD when not given on create. */
+  kind?: DocumentKind;
   pageCount?: number;
   imageWidth?: number;
   imageHeight?: number;
@@ -325,6 +330,21 @@ export interface UploadIntentRepository {
 // ==========================================
 // REPOSITORY INTERFACES
 // ==========================================
+/** Signup stores this when no name is given; it is not the patient's name. */
+export const PLACEHOLDER_FULL_NAME = 'Patient Profile';
+
+/** The stored name, or null when it is blank or the signup placeholder. */
+export function patientNameOrNull(fullName: string | null | undefined): string | null {
+  const trimmed = fullName?.trim();
+  if (!trimmed || trimmed === PLACEHOLDER_FULL_NAME) return null;
+  return trimmed;
+}
+
+export interface PatientProfileRepository {
+  /** The patient's own name as they gave it, or null when none was given. */
+  findFullName(patientProfileId: string): Promise<string | null>;
+}
+
 
 export interface DocumentRepository {
   create(data: Omit<DocumentRecord, 'id' | 'uploadedAt' | 'updatedAt'> & { id?: string }): Promise<DocumentRecord>;
@@ -360,6 +380,18 @@ export interface PrescriptionRepository {
 // ==========================================
 // PRISMA (POSTGRESQL) REPOSITORY IMPLEMENTATIONS
 // ==========================================
+
+export class PrismaPatientProfileRepository implements PatientProfileRepository {
+  constructor(private readonly prisma: PrismaClient = getPrismaClient()) {}
+
+  async findFullName(patientProfileId: string): Promise<string | null> {
+    const profile = await this.prisma.patientProfile.findUnique({
+      where: { id: patientProfileId },
+      select: { fullName: true },
+    });
+    return patientNameOrNull(profile?.fullName);
+  }
+}
 
 export class PrismaUploadIntentRepository implements UploadIntentRepository {
   constructor(private readonly prisma: PrismaClient = getPrismaClient()) {}
@@ -614,6 +646,7 @@ export class PrismaDocumentRepository implements DocumentRepository {
         fileSizeBytes: data.fileSizeBytes,
         sha256Checksum: data.sha256Checksum,
         status: data.status,
+        kind: data.kind ?? 'UPLOAD',
         pageCount: data.pageCount,
         imageWidth: data.imageWidth,
         imageHeight: data.imageHeight,
@@ -1735,6 +1768,18 @@ export class PrismaMedicationRepository implements MedicationRepository {
 // IN-MEMORY / TEST DOUBLE IMPLEMENTATIONS
 // ==========================================
 
+export class InMemoryPatientProfileRepository implements PatientProfileRepository {
+  private readonly names = new Map<string, string>();
+
+  setFullName(patientProfileId: string, fullName: string): void {
+    this.names.set(patientProfileId, fullName);
+  }
+
+  async findFullName(patientProfileId: string): Promise<string | null> {
+    return patientNameOrNull(this.names.get(patientProfileId));
+  }
+}
+
 export class InMemoryUploadIntentRepository implements UploadIntentRepository {
   private intents = new Map<string, UploadIntentRecord>();
 
@@ -1848,6 +1893,7 @@ export class InMemoryDocumentRepository implements DocumentRepository {
     const now = new Date();
     const record: DocumentRecord = {
       ...data,
+      kind: data.kind ?? 'UPLOAD',
       id,
       uploadedAt: now,
       updatedAt: now,

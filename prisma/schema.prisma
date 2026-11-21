@@ -21,6 +21,12 @@ enum ProcessingStatus {
   FAILED
 }
 
+/// UPLOAD: a file the patient uploaded. REPORT: a PDF the server generated from verified records.
+enum DocumentKind {
+  UPLOAD
+  REPORT
+}
+
 enum UploadIntentStatus {
   PENDING
   VERIFYING
@@ -131,6 +137,7 @@ model Document {
   fileSizeBytes    Int              @map("file_size_bytes")
   sha256Checksum   String           @map("sha256_checksum")
   status           ProcessingStatus @default(UPLOADED)
+  kind             DocumentKind     @default(UPLOAD)
   pageCount        Int?             @map("page_count")
   imageWidth       Int?             @map("image_width")
   imageHeight      Int?             @map("image_height")

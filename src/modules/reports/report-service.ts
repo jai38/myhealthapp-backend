@@ -5,6 +5,7 @@ import {
   TimelineEventDetailRecord,
   MedicationDetailRecord,
   DocumentRecord,
+  PatientProfileRepository,
 } from '../persistence/repositories.js';
 import { DocumentService } from '../documents/document-service.js';
 import {
@@ -44,7 +45,9 @@ export class ReportService {
   constructor(
     private readonly timelineRepo: TimelineRepository,
     private readonly medicationRepo: MedicationRepository,
-    private readonly documentService: DocumentService
+    private readonly documentService: DocumentService,
+    /** Without one, reports carry no name rather than a made-up one. */
+    private readonly profileRepo?: PatientProfileRepository
   ) {}
 
   /**
@@ -80,6 +83,7 @@ export class ReportService {
       if (isNaN(startD.getTime())) {
         const err = new Error('Invalid start date format. Expected YYYY-MM-DD or ISO timestamp.');
         (err as any).statusCode = 400;
+        (err as any).field = 'startDate';
         throw err;
       }
     }
@@ -89,6 +93,7 @@ export class ReportService {
       if (isNaN(endD.getTime())) {
         const err = new Error('Invalid end date format. Expected YYYY-MM-DD or ISO timestamp.');
         (err as any).statusCode = 400;
+        (err as any).field = 'endDate';
         throw err;
       }
     }
@@ -96,6 +101,7 @@ export class ReportService {
     if (startD && endD && startD > endD) {
       const err = new Error('Invalid date range: Start date cannot be after end date.');
       (err as any).statusCode = 400;
+      (err as any).field = 'startDate';
       throw err;
     }
 
@@ -189,7 +195,8 @@ export class ReportService {
     const payload: ExportDataPayload = {
       patient: {
         patientProfileId,
-        fullName: 'Test Patient',
+        // The patient's own name; '' when none was given. Never a placeholder.
+        fullName: (await this.profileRepo?.findFullName(patientProfileId)) ?? '',
       },
       reportTitle: title?.trim() || 'Medical Summary Report',
       generatedAt: new Date().toISOString(),
@@ -264,12 +271,18 @@ export class ReportService {
   }
 
   /**
-   * Retrieves raw PDF buffer for direct authenticated streaming or download.
+   * Retrieves a stored report's PDF bytes for the authenticated patient. Only server-generated
+   * reports qualify: an uploaded document (a photo, a prescription PDF) is "not found" here, so
+   * this route never streams it under an application/pdf label.
    */
   async getReportBuffer(
     patientProfileId: string,
     documentId: string
   ): Promise<{ buffer: Buffer; doc: DocumentRecord }> {
+    const doc = await this.documentService.getDocument(patientProfileId, documentId);
+    if (doc.kind !== 'REPORT' || doc.mimeType !== 'application/pdf') {
+      throw new Error('Document not found');
+    }
     return this.documentService.getDocumentBuffer(patientProfileId, documentId);
   }
 }

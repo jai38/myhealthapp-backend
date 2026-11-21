@@ -23,6 +23,15 @@ export interface ExportDataPayload {
 }
 
 /**
+ * The name line in the PDF. The standard fonts are Latin-only, so a name in another script (such
+ * as Devanagari) can't be drawn; say so rather than claiming no name was given.
+ */
+export function patientNameForPdf(fullName: string | null | undefined): string {
+  if (!fullName || !fullName.trim()) return 'Name not recorded';
+  return sanitizeAscii(fullName) || 'Name on file (script not supported in PDF)';
+}
+
+/**
  * Sanitizes input string to WinAnsi/ASCII printable range.
  * Replaces common unicode typography with safe ASCII equivalents.
  */
@@ -302,7 +311,7 @@ class PdfPageManager {
   applyFooters(): void {
     const totalPages = this.pages.length;
     const disclaimer =
-      'Notice: This document is an export of patient-verified personal health records compiled using My Health App. ' +
+      'Notice: This document is an export of patient-verified personal health records compiled using Ayoreni. ' +
       'It is provided for informational and clinical reference purposes only and does not constitute a new medical ' +
       'prescription or clinical diagnosis. Please verify against original clinical source documentation.';
 
@@ -397,7 +406,7 @@ export async function generateMedicalReportPdf(
 
   // Col 1: Patient details & verification
   mgr.currentPage.drawText('Patient Name:', { x: col1X, y: textY, size: 8, font: fontBold, color: C_MUTED });
-  mgr.currentPage.drawText(sanitizeAscii(data.patient.fullName || 'Verified Patient'), {
+  mgr.currentPage.drawText(patientNameForPdf(data.patient.fullName), {
     x: col1X + 70,
     y: textY,
     size: 9.5,

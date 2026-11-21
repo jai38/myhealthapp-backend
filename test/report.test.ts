@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import crypto from 'crypto';
+import zlib from 'zlib';
 import { createApp } from '../src/app.js';
 import {
   InMemoryDocumentRepository,
@@ -9,6 +10,7 @@ import {
   InMemoryUploadIntentRepository,
   InMemoryTimelineRepository,
   InMemoryMedicationRepository,
+  InMemoryPatientProfileRepository,
 } from '../src/modules/persistence/repositories.js';
 import { DocumentService } from '../src/modules/documents/document-service.js';
 import { MemoryStorageProvider } from '../src/modules/storage/storage-provider.js';
@@ -18,6 +20,26 @@ import { PrescriptionService } from '../src/modules/prescriptions/prescription-s
 import { TimelineService } from '../src/modules/timeline/timeline-service.js';
 import { MedicationService } from '../src/modules/medications/medication-service.js';
 import { ReportService } from '../src/modules/reports/report-service.js';
+import { patientNameForPdf } from '../src/modules/reports/pdf-generator.js';
+
+/** The text drawn in a pdf-lib PDF: inflates each content stream and decodes its hex strings. */
+function pdfText(pdf: Buffer): string {
+  const raw = pdf.toString('latin1');
+  const parts: string[] = [];
+  const streamRe = /stream\r?\n([\s\S]*?)\r?\nendstream/g;
+  for (let m = streamRe.exec(raw); m; m = streamRe.exec(raw)) {
+    let content: string;
+    try {
+      content = zlib.inflateSync(Buffer.from(m[1], 'latin1')).toString('latin1');
+    } catch {
+      content = m[1];
+    }
+    for (const hex of content.match(/<([0-9A-Fa-f]+)>\s*Tj/g) ?? []) {
+      parts.push(Buffer.from(hex.replace(/[<>\sTj]/g, ''), 'hex').toString('latin1'));
+    }
+  }
+  return parts.join(' ').replace(/\s+/g, ' ');
+}
 
 describe('Phase 5: Medical PDF Reports & Secure Export API', () => {
   let app: any;
@@ -34,6 +56,7 @@ describe('Phase 5: Medical PDF Reports & Secure Export API', () => {
   let timelineService: TimelineService;
   let medicationService: MedicationService;
   let reportService: ReportService;
+  let profileRepo: InMemoryPatientProfileRepository;
 
   const patientA = 'pat_userA';
   const patientB = 'pat_userB';
@@ -54,7 +77,8 @@ describe('Phase 5: Medical PDF Reports & Secure Export API', () => {
     prescriptionService = new PrescriptionService(prescriptionRepo);
     timelineService = new TimelineService(timelineRepo, documentService);
     medicationService = new MedicationService(medicationRepo, documentService);
-    reportService = new ReportService(timelineRepo, medicationRepo, documentService);
+    profileRepo = new InMemoryPatientProfileRepository();
+    reportService = new ReportService(timelineRepo, medicationRepo, documentService, profileRepo);
 
     app = createApp({
       storageProvider,
@@ -511,6 +535,101 @@ describe('Phase 5: Medical PDF Reports & Secure Export API', () => {
       expect(downloadRes.headers['content-disposition']).toContain('attachment');
       const bodyBuffer = Buffer.from(downloadRes.body);
       expect(bodyBuffer.slice(0, 4).toString()).toBe('%PDF');
+    });
+  });
+
+  describe('Patient name and branding', () => {
+    it("export-data carries the patient's own name, never a hard-coded one", async () => {
+      profileRepo.setFullName(patientA, 'Asha Test');
+      profileRepo.setFullName(patientB, 'Ravi Test');
+      await seedPrescription(patientA, '2026-03-15');
+
+      const a = await request(app).post('/api/v1/reports/export-data').set('Authorization', `Bearer ${tokenPatientA}`).send({});
+      const b = await request(app).post('/api/v1/reports/export-data').set('Authorization', `Bearer ${tokenPatientB}`).send({ allowEmpty: true });
+
+      expect(a.status).toBe(200);
+      expect(a.body.data.patient).toEqual({ patientProfileId: patientA, fullName: 'Asha Test' });
+      expect(b.body.data.patient.fullName).toBe('Ravi Test');
+      expect(JSON.stringify(a.body)).not.toContain('Test Patient');
+    });
+
+    it('leaves the name empty when none was given, rather than guessing one', async () => {
+      profileRepo.setFullName(patientA, 'Patient Profile'); // the signup placeholder
+      await seedPrescription(patientA, '2026-03-15');
+      const res = await request(app).post('/api/v1/reports/export-data').set('Authorization', `Bearer ${tokenPatientA}`).send({});
+      expect(res.body.data.patient.fullName).toBe('');
+    });
+
+    it('prints the name and an Ayoreni footer in the PDF, with no old brand', async () => {
+      profileRepo.setFullName(patientA, 'Asha Test');
+      await seedPrescription(patientA, '2026-03-15');
+      const res = await request(app)
+        .post('/api/v1/reports/generate-pdf')
+        .set('Authorization', `Bearer ${tokenPatientA}`)
+        .send({})
+        .responseType('blob');
+      const text = pdfText(Buffer.from(res.body));
+      expect(text).toContain('Asha Test');
+      expect(text).toContain('Ayoreni');
+      expect(text).not.toContain('Test Patient');
+      expect(text).not.toMatch(/My\s*Health/);
+    });
+
+    it('prints "Name not recorded" in the PDF when no name was given', async () => {
+      await seedPrescription(patientA, '2026-03-15');
+      const res = await request(app)
+        .post('/api/v1/reports/generate-pdf')
+        .set('Authorization', `Bearer ${tokenPatientA}`)
+        .send({})
+        .responseType('blob');
+      const text = pdfText(Buffer.from(res.body));
+      expect(text).toContain('Name not recorded');
+    });
+  });
+
+  describe('PDF name line', () => {
+    it('never says "not recorded" for a name it cannot draw', () => {
+      expect(patientNameForPdf('')).toBe('Name not recorded');
+      expect(patientNameForPdf('Asha Test')).toBe('Asha Test');
+      expect(patientNameForPdf('\u0906\u0936\u093e')).toBe('Name on file (script not supported in PDF)');
+    });
+  });
+
+  describe('Report download serves reports only', () => {
+    it('answers 404 for an uploaded document, PDF or photo, of the same patient', async () => {
+      const { doc: uploadedPdf } = await seedPrescription(patientA, '2026-03-15');
+      const photoId = crypto.randomUUID();
+      const photoKey = `documents/${patientA}/${photoId}`;
+      await storageProvider.putObject(photoKey, patientA, Buffer.from([0xff, 0xd8, 0xff, 0xe0]), 'image/jpeg');
+      await docRepo.create({
+        id: photoId,
+        patientProfileId: patientA,
+        storageKey: photoKey,
+        originalFilename: 'rx-photo.jpg',
+        mimeType: 'image/jpeg',
+        fileSizeBytes: 4,
+        sha256Checksum: 'x',
+        status: 'CONFIRMED',
+      });
+
+      for (const id of [uploadedPdf.id, photoId]) {
+        const res = await request(app).get(`/api/v1/reports/${id}/download`).set('Authorization', `Bearer ${tokenPatientA}`);
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe('NOT_FOUND');
+        expect(res.headers['content-type']).not.toContain('application/pdf');
+      }
+    });
+
+    it('stores generated reports as kind REPORT and uploads default to UPLOAD', async () => {
+      const { doc: uploaded } = await seedPrescription(patientA, '2026-03-15');
+      const gen = await request(app).post('/api/v1/reports/generate').set('Authorization', `Bearer ${tokenPatientA}`).send({});
+      expect((await docRepo.findById(gen.body.data.reportId))?.kind).toBe('REPORT');
+      expect((await docRepo.findById(uploaded.id))?.kind).toBe('UPLOAD');
+
+      const list = await request(app).get('/api/v1/documents').set('Authorization', `Bearer ${tokenPatientA}`);
+      const kinds = Object.fromEntries(list.body.data.map((d: any) => [d.id, d.kind]));
+      expect(kinds[gen.body.data.reportId]).toBe('REPORT');
+      expect(kinds[uploaded.id]).toBe('UPLOAD');
     });
   });
 });
