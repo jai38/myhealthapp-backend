@@ -207,3 +207,27 @@ Terraform state is a local file in `terraform.tfstate.d/`, and it is git-ignored
 `dev.tf` adds a dev copy to this stack when `dev_enabled = true` in `envs/v1.tfvars`. It shares the VPC, RDS instance, cluster, ECR and VPC link with prod, and keeps its own schema (`dev`), bucket, secrets (`/myhealth/v1/dev/*`), API service, API Gateway URL and roles. Extraction runs inline in the dev API. A plan should show only additions. Cost is about USD 10 a month while the dev API runs; `./dev-env.ps1 Stop` pauses it.
 
 Setup, synthetic data and switching the app: `docs/dev-data/README.md` in the workspace. Day-to-day: `./dev-env.ps1 Status | Start | Stop | SetSecrets | Migrate | Seed | Remove | UploadImages`.
+
+## 17. Phone sign-in with WhatsApp codes
+
+`whatsapp.tf` adds what the API needs to send sign-in codes through the Meta Cloud API. Until you switch it on, the API runs with `WHATSAPP_SENDER=disabled` and the code routes answer 503 `OTP_UNAVAILABLE`, so applying this changes nothing for users.
+
+What it adds:
+- **Parameter Store placeholders** (SecureString, under the usual prefix): `OTP_HMAC_SECRET`, `META_WHATSAPP_TOKEN`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, plus `dev/OTP_HMAC_SECRET` when dev is on. Only the API's execution role (and dev's, for dev) can read them; the worker can't, and refuses to start with them set.
+- **Three alarms** on the API's own count of codes, emailed through the existing alerts topic: more codes in a day than `otp_daily_alarm_threshold` (default 1,500); the daily cap reached (`otp_daily_cap`, default 2,000); more than 10 failed sends in 15 minutes. Meta bills outside AWS, so the AWS budget can't see this spend.
+
+Steps:
+1. Apply with the defaults (`whatsapp_sender = "disabled"`). The plan should show the new parameters, alarms and new task definition revisions only.
+2. Set the keyed-hash secret now (any time before switching on). It must be at least 32 random characters and different from `JWT_SECRET`:
+   ```bash
+   aws ssm put-parameter --name /myhealth/v1/OTP_HMAC_SECRET --type SecureString --key-id alias/myhealth-v1-data --overwrite --value "$(openssl rand -base64 48)"
+   ```
+   Changing it later invalidates codes in flight and every saved recovery code, so set it once.
+3. Once Meta has approved the business and the authentication template (Phase 5 tasks 1–2):
+   - Store the system-user token, the app secret and a verify token you choose, the same way: `META_WHATSAPP_TOKEN`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`.
+   - In the Meta app's WhatsApp settings, set the webhook URL to `<api_url>/api/v1/webhooks/whatsapp` with the same verify token, and subscribe to `messages`.
+   - In `envs/v1.tfvars`, set `whatsapp_sender = "meta"`, `meta_whatsapp_phone_number_id` and `meta_whatsapp_template_name` (both are on Meta's WhatsApp API setup page; neither is secret).
+4. Apply, then deploy. If a value is missing or still a placeholder, the API refuses to start and names the variable.
+5. Check from a phone: request a code, get it on WhatsApp, verify. Then try a number with no WhatsApp: within a minute, `GET /api/v1/auth/otp/request/<id>` should report `WHATSAPP_UNAVAILABLE`.
+
+Dev: `dev_whatsapp_sender` is separate (default `disabled`), so switching prod on never changes dev. Dev sends with the shared token. A Meta app has one webhook URL, so dev only sees late delivery results if it has its own Meta app.

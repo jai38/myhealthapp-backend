@@ -60,6 +60,7 @@ locals {
     var.app_maintenance_message != "" ? [
       { name = "APP_MAINTENANCE_MESSAGE", value = var.app_maintenance_message },
     ] : [],
+    local.whatsapp_environment,
     var.ses_identity != "" && var.email_from != "" ? [
       { name = "EMAIL_PROVIDER", value = "ses" },
       { name = "EMAIL_FROM", value = var.email_from },
@@ -105,10 +106,10 @@ resource "aws_ecs_task_definition" "api" {
 
     portMappings = [{ containerPort = local.api_container_port, protocol = "tcp" }]
     environment  = local.api_environment
-    secrets = [
+    secrets = concat([
       { name = "DATABASE_URL", valueFrom = local.secret_arn["DATABASE_URL"] },
       { name = "JWT_SECRET", valueFrom = local.secret_arn["JWT_SECRET"] },
-    ]
+    ], local.whatsapp_secrets)
 
     healthCheck = {
       command     = ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${local.api_container_port}/healthz || exit 1"]

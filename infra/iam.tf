@@ -28,7 +28,7 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
 locals {
   execution_roles = {
     api = {
-      parameters = ["DATABASE_URL", "JWT_SECRET"]
+      parameters = concat(["DATABASE_URL", "JWT_SECRET"], local.whatsapp_secret_names)
       log_group  = aws_cloudwatch_log_group.api.arn
     }
     worker = {
