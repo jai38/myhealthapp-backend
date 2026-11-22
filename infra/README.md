@@ -218,13 +218,31 @@ What it adds:
 
 Steps:
 1. Apply with the defaults (`whatsapp_sender = "disabled"`). The plan should show the new parameters, alarms and new task definition revisions only.
-2. Set the keyed-hash secret now (any time before switching on). It must be at least 32 random characters and different from `JWT_SECRET`:
-   ```bash
-   aws ssm put-parameter --name /myhealth/v1/OTP_HMAC_SECRET --type SecureString --key-id alias/myhealth-v1-data --overwrite --value "$(openssl rand -base64 48)"
+2. Set the keyed-hash secret now (any time before switching on). It must be at least 32 random characters and different from `JWT_SECRET`. Changing it later invalidates codes in flight and every saved recovery code, so set it once:
+   ```powershell
+   $region = 'ap-south-1'
+   $key    = 'alias/myhealth-v1-data'
+   $prefix = '/myhealth/v1'
+
+   # Keyed-hash secret (64 random hex characters).
+   $bytes = New-Object byte[] 32
+   [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+   aws ssm put-parameter --region $region --name "$prefix/OTP_HMAC_SECRET" --type SecureString --key-id $key --overwrite `
+     --value ([BitConverter]::ToString($bytes).Replace('-',''))
    ```
-   Changing it later invalidates codes in flight and every saved recovery code, so set it once.
+   With dev on, run the same for `"$prefix/dev/OTP_HMAC_SECRET"` with fresh random bytes.
 3. Once Meta has approved the business and the authentication template (Phase 5 tasks 1–2):
-   - Store the system-user token, the app secret and a verify token you choose, the same way: `META_WHATSAPP_TOKEN`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`.
+   - Store the system-user token and the app secret, typed so they never enter shell history, and a random verify token:
+     ```powershell
+     $metaToken = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR((Read-Host -AsSecureString 'Meta system-user token')))
+     aws ssm put-parameter --region $region --name "$prefix/META_WHATSAPP_TOKEN" --type SecureString --key-id $key --overwrite --value $metaToken
+     $appSecret = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR((Read-Host -AsSecureString 'Meta app secret')))
+     aws ssm put-parameter --region $region --name "$prefix/META_APP_SECRET" --type SecureString --key-id $key --overwrite --value $appSecret
+     $verify = [guid]::NewGuid().ToString('N')
+     aws ssm put-parameter --region $region --name "$prefix/META_WEBHOOK_VERIFY_TOKEN" --type SecureString --key-id $key --overwrite --value $verify
+     Write-Output "Webhook verify token for the Meta app: $verify"
+     Remove-Variable metaToken, appSecret
+     ```
    - In the Meta app's WhatsApp settings, set the webhook URL to `<api_url>/api/v1/webhooks/whatsapp` with the same verify token, and subscribe to `messages`.
    - In `envs/v1.tfvars`, set `whatsapp_sender = "meta"`, `meta_whatsapp_phone_number_id` and `meta_whatsapp_template_name` (both are on Meta's WhatsApp API setup page; neither is secret).
 4. Apply, then deploy. If a value is missing or still a placeholder, the API refuses to start and names the variable.
