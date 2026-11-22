@@ -1,0 +1,82 @@
+# Deploy workflow for the landing page repository. Copy to .github/workflows/deploy-site.yml there.
+# It needs the repository variables from the Terraform output site_github_actions_variables
+# (infra/README.md, section 16). No AWS keys are stored: the job assumes the site deploy role by OIDC,
+# and that role can only write the site bucket and invalidate the site distribution.
+
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for the AWS role
+
+concurrency:
+  group: deploy-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # No `environment:` here: it would change the OIDC subject to ...:environment:<name>, and the
+    # deploy role trusts only ...:ref:refs/heads/main.
+    env:
+      BUCKET: ${{ vars.SITE_BUCKET }}
+      DISTRIBUTION_ID: ${{ vars.SITE_DISTRIBUTION_ID }}
+      SITE_URL: ${{ vars.SITE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check settings
+        run: |
+          for v in BUCKET DISTRIBUTION_ID SITE_URL; do
+            if [ -z "${!v}" ]; then echo "Repository variable for $v is not set"; exit 1; fi
+          done
+          test -f index.html || { echo "index.html missing"; exit 1; }
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.SITE_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Upload
+        run: |
+          # Files that are not part of the site. S3 filters apply in order and the last match wins,
+          # so these always come after any --include.
+          EXCLUDES=(--exclude ".git*" --exclude ".github/*" --exclude "*.md" --exclude "LICENSE*" --exclude "CNAME" --exclude "docs/*")
+
+          # Fonts and images: names rarely change; cached 30 days.
+          aws s3 sync . "s3://$BUCKET" "${EXCLUDES[@]}" \
+            --exclude "*.html" --exclude "*.css" --exclude "*.js" --exclude "*.woff2" --exclude "*.woff" \
+            --cache-control "public, max-age=2592000"
+          aws s3 sync . "s3://$BUCKET" --exclude "*" --include "*.woff2" "${EXCLUDES[@]}" \
+            --content-type "font/woff2" --cache-control "public, max-age=2592000"
+          aws s3 sync . "s3://$BUCKET" --exclude "*" --include "*.woff" "${EXCLUDES[@]}" \
+            --content-type "font/woff" --cache-control "public, max-age=2592000"
+
+          # Stylesheets (and any script, should one appear): one hour.
+          aws s3 sync . "s3://$BUCKET" --exclude "*" --include "*.css" --include "*.js" "${EXCLUDES[@]}" \
+            --cache-control "public, max-age=3600"
+
+          # Pages: always revalidated.
+          aws s3 sync . "s3://$BUCKET" --exclude "*" --include "*.html" "${EXCLUDES[@]}" \
+            --content-type "text/html; charset=utf-8" --cache-control "no-cache"
+
+          # Remove files deleted from the repository. Last, so a page never points at a missing file.
+          # --size-only: the files above are already uploaded, so nothing is sent again.
+          aws s3 sync . "s3://$BUCKET" "${EXCLUDES[@]}" --delete --size-only
+
+      # One wildcard path counts as one invalidation (the first 1,000 a month are free).
+      - name: Invalidate the CDN
+        run: aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths "/*" > /dev/null
+
+      - name: Check the live page
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS -o /dev/null "$SITE_URL/"; then echo "Live: $SITE_URL"; exit 0; fi
+            sleep 10
+          done
+          echo "Site did not answer"; exit 1
