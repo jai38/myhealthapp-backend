@@ -224,7 +224,7 @@ export class DatabaseAuthProviderAdapter implements AuthProviderAdapter {
       });
 
       if (!this.requireEmailVerification) {
-        const session = await this.issueSession(this.prisma, result.user.id, result.user.email, result.profile.id, crypto.randomUUID());
+        const session = await this.issueSession(this.prisma, result.user.id, normalizedEmail, result.profile.id, crypto.randomUUID());
         return {
           userId: result.user.id,
           patientProfileId: result.profile.id,
@@ -319,7 +319,7 @@ export class DatabaseAuthProviderAdapter implements AuthProviderAdapter {
       profileId = newProfile.id;
     }
 
-    const session = await this.issueSession(this.prisma, user.id, user.email, profileId, crypto.randomUUID());
+    const session = await this.issueSession(this.prisma, user.id, normalizedEmail, profileId, crypto.randomUUID());
     await this.auditSafe(user.id, 'LOGIN', 'USER', user.id);
     return session;
   }
@@ -355,7 +355,8 @@ export class DatabaseAuthProviderAdapter implements AuthProviderAdapter {
       where: { id: record.userId },
       include: { patientProfile: true },
     });
-    if (!user || !user.isVerified || !user.patientProfile) {
+    // Phone sessions (no email, a device) are refreshed by the phone sign-in service, never here.
+    if (!user || !user.isVerified || !user.patientProfile || !user.email || record.deviceId) {
       await this.revokeFamily(record.familyId);
       throw new AuthError('INVALID_TOKEN');
     }
@@ -374,13 +375,14 @@ export class DatabaseAuthProviderAdapter implements AuthProviderAdapter {
   }
 
   async verifySessionToken(token: string): Promise<{ userId: string; email: string; patientProfileId?: string }> {
-    let decoded: { userId: string; email: string; patientProfileId?: string; iat?: number };
+    let decoded: { userId: string; email: string; patientProfileId?: string; iat?: number; typ?: string };
     try {
       decoded = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'] }) as typeof decoded;
     } catch {
       throw new Error('Invalid or expired session token');
     }
-    if (!decoded.userId || !decoded.patientProfileId) {
+    // Phone-session tokens are checked by the phone sign-in service (device revocation included).
+    if (decoded.typ !== undefined || !decoded.userId || !decoded.patientProfileId || !decoded.email) {
       throw new Error('Invalid or expired session token');
     }
 
