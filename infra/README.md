@@ -207,3 +207,32 @@ Terraform state is a local file in `terraform.tfstate.d/`, and it is git-ignored
 `dev.tf` adds a dev copy to this stack when `dev_enabled = true` in `envs/v1.tfvars`. It shares the VPC, RDS instance, cluster, ECR and VPC link with prod, and keeps its own schema (`dev`), bucket, secrets (`/myhealth/v1/dev/*`), API service, API Gateway URL and roles. Extraction runs inline in the dev API. A plan should show only additions. Cost is about USD 10 a month while the dev API runs; `./dev-env.ps1 Stop` pauses it.
 
 Setup, synthetic data and switching the app: `docs/dev-data/README.md` in the workspace. Day-to-day: `./dev-env.ps1 Status | Start | Stop | SetSecrets | Migrate | Seed | Remove | UploadImages`.
+
+## 16. Landing page on the company domain
+
+`site.tf` serves the static landing page from a private S3 bucket behind CloudFront, at the apex domain and `www` (which redirects to the apex). It is off until `site_domain_name` is set. It reads the existing public Route 53 hosted zone for that domain; it never creates one. The certificate is made in `us-east-1`, as CloudFront requires.
+
+Cost: a few US cents a month for S3 and CloudFront at landing-page traffic, plus USD 0.50 a month for the hosted zone you already have. The certificate is free.
+
+1. In `envs/v1.tfvars`, set `site_domain_name` to the apex domain (for example `example.com`, no `www`).
+2. Check the site repository's OIDC subject matches `site_github_oidc_subject_prefix` (the default is the landing page repository in its immutable form):
+   ```bash
+   gh api repos/<owner>/<site-repo>/actions/oidc/customization/sub
+   ```
+   If it reports `use_default: true`, GitHub sends `repo:<owner>/<site-repo>` instead; set the variable to that.
+3. Plan and apply. The plan should show only additions: the bucket and its settings, one certificate, its validation records, a CloudFront distribution, function, origin access control and headers policy, four alias records (A and AAAA for the apex and `www`) and one IAM role. Apply waits for the certificate to validate, usually a few minutes.
+   ```bash
+   terraform plan -var-file=envs/v1.tfvars -out=site.tfplan
+   terraform apply site.tfplan
+   ```
+4. Print the values for the site repository:
+   ```bash
+   terraform output site_github_actions_variables
+   ```
+   In the site repository, add each one under Settings, Secrets and variables, Actions, Variables: `AWS_REGION`, `SITE_DEPLOY_ROLE_ARN`, `SITE_BUCKET`, `SITE_DISTRIBUTION_ID`, `SITE_URL` (and `SITE_CLOUDFRONT_DOMAIN`, for reference only).
+5. Copy `infra/site-deploy.example.yml` to `.github/workflows/deploy-site.yml` in the site repository and merge it to `main`. That push is the first deploy; later pushes to `main` deploy again. It can also be run by hand (workflow_dispatch).
+6. Check `https://<domain>/` and `https://www.<domain>/` (the second should redirect), and that the response carries `strict-transport-security` and `content-security-policy` headers.
+
+The deploy role trusts only the site repository's `main` branch. It can list the bucket, put and delete objects in it, and create invalidations on this distribution; nothing else. Old file versions are kept 30 days, so a bad deploy can be rolled back by restoring the previous versions, or by reverting on `main`.
+
+The page must load nothing from other domains and run no scripts: the Content-Security-Policy (`site_content_security_policy`) allows only the site itself. Inline `style="…"` attributes are allowed because the page uses a few; `<style>` blocks and scripts are not. Once those attributes move into `assets/style.css`, drop `style-src-attr 'unsafe-inline'` from the variable. Change it before adding anything that needs more.
