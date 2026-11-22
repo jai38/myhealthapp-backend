@@ -60,9 +60,22 @@ const ROUTE_POLICY: Record<string, Policy> = {
   [`POST ${API}/auth/reset-password`]: { kind: 'public' },
   [`POST ${API}/auth/verify-email`]: { kind: 'public' },
   [`POST ${API}/auth/resend-verification`]: { kind: 'public' },
+  // Phone sign-in (Phase 5): public by design; covered in test/phone-auth.test.ts.
+  [`POST ${API}/auth/otp/request`]: { kind: 'public' },
+  [`GET ${API}/auth/otp/request/:requestId`]: { kind: 'public', params: { requestId: 'patientProfileId' } },
+  [`POST ${API}/auth/otp/verify`]: { kind: 'public' },
+  [`POST ${API}/auth/second-factor`]: { kind: 'public' },
+  [`GET ${API}/webhooks/whatsapp/`]: { kind: 'public' },
+  [`POST ${API}/webhooks/whatsapp/`]: { kind: 'public' },
 
   // ---- authenticated, token-scoped only ----
   [`GET ${API}/auth/me`]: { kind: 'self' },
+  // Phone sessions only; any other token gets 404. Cross-user cases are in test/phone-auth.test.ts.
+  [`GET ${API}/auth/devices`]: { kind: 'self' },
+  [`DELETE ${API}/auth/devices/:deviceId`]: { kind: 'self', params: { deviceId: 'patientProfileId' } },
+  [`POST ${API}/auth/recovery-code`]: { kind: 'self' },
+  [`GET ${API}/auth/account`]: { kind: 'self' },
+  [`PUT ${API}/auth/account`]: { kind: 'self' },
   [`DELETE ${API}/auth/account`]: { kind: 'self' },
   [`GET ${API}/patient/profile`]: { kind: 'self' },
 

@@ -53,6 +53,32 @@ export const envSchema = z.object({
   // Which copy of the backend this is. dev and prod share one AWS account; validateProductionConfig
   // refuses a dev deployment wired to prod data or the reverse. Unset means prod in production, local elsewhere.
   DEPLOYMENT_ENV: z.enum(['local', 'dev', 'prod']).optional(),
+
+  // --- Phone sign-in with WhatsApp codes (Phase 5) ---
+  // 'meta' sends through the Meta Cloud API; 'memory' keeps codes in-process (local and tests only);
+  // 'disabled' answers the code routes with 503 OTP_UNAVAILABLE. Production defaults to disabled.
+  WHATSAPP_SENDER: z.enum(['disabled', 'memory', 'meta']).default(
+    process.env.NODE_ENV === 'production' ? 'disabled' : 'memory'
+  ),
+  // Key for every keyed hash (codes, numbers, install ids, IPs, recovery codes). Required in production
+  // unless the sender is disabled.
+  OTP_HMAC_SECRET: z.string().default('dev-insecure-otp-hmac-secret-replace-in-production'),
+  META_WHATSAPP_TOKEN: z.string().optional(),
+  META_WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  META_WHATSAPP_TEMPLATE_NAME: z.string().optional(),
+  META_WHATSAPP_TEMPLATE_LANGUAGE: z.string().default('en'),
+  META_GRAPH_API_VERSION: z.string().regex(/^v\d+\.\d+$/).default('v23.0'),
+  // Checks the X-Hub-Signature-256 header on webhook calls, and the verify token on Meta's setup call.
+  META_APP_SECRET: z.string().optional(),
+  META_WEBHOOK_VERIFY_TOKEN: z.string().optional(),
+  // Codes sent across the whole service per UTC day; above it, requests get 429 DAILY_LIMIT.
+  OTP_DAILY_CAP: z.string().default('2000').transform((v) => parseInt(v, 10)).refine((v) => Number.isInteger(v) && v > 0, {
+    message: 'OTP_DAILY_CAP must be a positive integer',
+  }),
+  // Local and test only (refused in production): numbers in OTP_TEST_NUMBERS (comma-separated E.164)
+  // get OTP_FIXED_CODE and nothing is sent.
+  OTP_FIXED_CODE: z.string().regex(/^\d{6}$/).optional(),
+  OTP_TEST_NUMBERS: z.string().optional(),
 }).superRefine((cfg, ctx) => {
   const a = cfg.APP_MIN_VERSION.split('.').map(Number);
   const b = cfg.APP_LATEST_VERSION.split('.').map(Number);
@@ -191,6 +217,44 @@ export function validateProductionConfig(
     ] as const) {
       if (!value || !/^https:\/\/sqs\.[a-z0-9-]+\.amazonaws\.com\//.test(value)) {
         violations.push(`${name} must be an https Amazon SQS queue URL when EXTRACTION_MODE is "sqs".`);
+      }
+    }
+  }
+
+  // 10. Phone sign-in: no fakes in production, and a real sender needs its settings.
+  const whatsappSender = config.WHATSAPP_SENDER ?? 'disabled';
+  if (whatsappSender === 'memory') {
+    violations.push('WHATSAPP_SENDER cannot be "memory" in production. Use "meta", or "disabled" until Meta approval.');
+  }
+  if (config.OTP_FIXED_CODE !== undefined && config.OTP_FIXED_CODE !== '') {
+    violations.push('OTP_FIXED_CODE must not be set in production.');
+  }
+  if (config.OTP_TEST_NUMBERS !== undefined && config.OTP_TEST_NUMBERS.trim() !== '') {
+    violations.push('OTP_TEST_NUMBERS must not be set in production.');
+  }
+  if (whatsappSender !== 'disabled') {
+    if (
+      !config.OTP_HMAC_SECRET ||
+      config.OTP_HMAC_SECRET.length < 32 ||
+      config.OTP_HMAC_SECRET.includes('dev-insecure') ||
+      config.OTP_HMAC_SECRET.includes('REPLACE_ME')
+    ) {
+      violations.push('OTP_HMAC_SECRET must be at least 32 random characters in production.');
+    }
+    if (config.OTP_HMAC_SECRET === config.JWT_SECRET) {
+      violations.push('OTP_HMAC_SECRET must differ from JWT_SECRET.');
+    }
+  }
+  if (whatsappSender === 'meta') {
+    for (const [name, value] of [
+      ['META_WHATSAPP_TOKEN', config.META_WHATSAPP_TOKEN],
+      ['META_WHATSAPP_PHONE_NUMBER_ID', config.META_WHATSAPP_PHONE_NUMBER_ID],
+      ['META_WHATSAPP_TEMPLATE_NAME', config.META_WHATSAPP_TEMPLATE_NAME],
+      ['META_APP_SECRET', config.META_APP_SECRET],
+      ['META_WEBHOOK_VERIFY_TOKEN', config.META_WEBHOOK_VERIFY_TOKEN],
+    ] as const) {
+      if (!value || value.trim() === '' || value.includes('REPLACE_ME')) {
+        violations.push(`${name} must be set when WHATSAPP_SENDER is "meta".`);
       }
     }
   }

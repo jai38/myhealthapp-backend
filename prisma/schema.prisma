@@ -11,6 +11,21 @@ enum AuthProvider {
   EMAIL
   GOOGLE
   APPLE
+  PHONE
+}
+
+/// Where a one-time code is, as far as WhatsApp has told us. "No WhatsApp" arrives late, by webhook.
+enum OtpDelivery {
+  PENDING
+  SENT
+  DELIVERED
+  WHATSAPP_UNAVAILABLE
+  FAILED
+}
+
+enum ConsentKind {
+  TERMS
+  HEALTH_DATA
 }
 
 enum ProcessingStatus {
@@ -81,20 +96,33 @@ enum MedicationStatus {
 }
 
 model User {
-  id           String       @id @default(uuid()) @db.Uuid
-  email        String       @unique
-  passwordHash String?      @map("password_hash")
-  passwordChangedAt DateTime? @map("password_changed_at")
-  authProvider AuthProvider @default(EMAIL) @map("auth_provider")
-  isVerified   Boolean      @default(false) @map("is_verified")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @updatedAt @map("updated_at")
+  id                    String       @id @default(uuid()) @db.Uuid
+  /// Login email of the older email accounts. Phone accounts have none (their optional email is
+  /// PatientProfile.contactEmail, which is never a login).
+  email                 String?      @unique
+  /// E.164, for example +919876543210. Set only once a code sent to it was verified.
+  phoneE164             String?      @unique @map("phone_e164")
+  phoneVerifiedAt       DateTime?    @map("phone_verified_at")
+  /// Last sign-in or refresh. Drives the 90-day rule for new devices (P2).
+  lastActiveAt          DateTime?    @map("last_active_at")
+  /// Keyed hash (HMAC-SHA256) of the recovery code (P3). The code itself is shown once and never stored.
+  recoveryCodeHmac      String?      @map("recovery_code_hmac")
+  recoveryCodeCreatedAt DateTime?    @map("recovery_code_created_at")
+  passwordHash          String?      @map("password_hash")
+  passwordChangedAt     DateTime?    @map("password_changed_at")
+  authProvider          AuthProvider @default(EMAIL) @map("auth_provider")
+  isVerified            Boolean      @default(false) @map("is_verified")
+  createdAt             DateTime     @default(now()) @map("created_at")
+  updatedAt             DateTime     @updatedAt @map("updated_at")
 
   patientProfile          PatientProfile?
   confirmedPrescriptions  Prescription[]           @relation("ConfirmedPrescriptions")
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
   refreshTokens           RefreshToken[]
+  devices                 Device[]
+  consents                ConsentRecord[]
+  secondFactorChallenges  SecondFactorChallenge[]
 
   @@map("users")
 }
@@ -105,6 +133,12 @@ model PatientProfile {
   fullName               String    @map("full_name")
   dateOfBirth            DateTime? @map("date_of_birth") @db.Date
   gender                 String?
+  /// Free text, only when the patient chose to self-describe.
+  genderSelfDescription  String?   @map("gender_self_description")
+  /// Optional contact email from S03. Not a login, not unique.
+  contactEmail           String?   @map("contact_email")
+  /// Set when S03 (name, date of birth, gender, health-data consent) is complete.
+  profileCompletedAt     DateTime? @map("profile_completed_at")
   bloodGroup             String?   @map("blood_group")
   isPrimaryAccountHolder Boolean   @default(true) @map("is_primary_account_holder")
   createdAt              DateTime  @default(now()) @map("created_at")
@@ -326,17 +360,17 @@ model Medication {
 }
 
 model DoseLog {
-  id               String     @id @default(uuid()) @db.Uuid
-  medicationId     String     @map("medication_id") @db.Uuid
-  patientProfileId String     @map("patient_profile_id") @db.Uuid
-  scheduledTime    DateTime   @map("scheduled_time")
-  status           DoseStatus @default(PENDING)
-  actionTime       DateTime?  @map("action_time")
-  snoozeMinutes    Int?       @map("snooze_minutes")
+  id               String      @id @default(uuid()) @db.Uuid
+  medicationId     String      @map("medication_id") @db.Uuid
+  patientProfileId String      @map("patient_profile_id") @db.Uuid
+  scheduledTime    DateTime    @map("scheduled_time")
+  status           DoseStatus  @default(PENDING)
+  actionTime       DateTime?   @map("action_time")
+  snoozeMinutes    Int?        @map("snooze_minutes")
   skipReason       SkipReason? @map("skip_reason")
   notes            String?
-  createdAt        DateTime   @default(now()) @map("created_at")
-  updatedAt        DateTime   @updatedAt @map("updated_at")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @updatedAt @map("updated_at")
 
   medication     Medication     @relation(fields: [medicationId], references: [id], onDelete: Cascade)
   patientProfile PatientProfile @relation(fields: [patientProfileId], references: [id], onDelete: Cascade)
@@ -377,15 +411,98 @@ model RefreshToken {
   userId    String    @map("user_id") @db.Uuid
   tokenHash String    @unique @map("token_hash")
   familyId  String    @map("family_id") @db.Uuid
+  /// Phone sessions only: the signed-in device. Email sessions have none.
+  deviceId  String?   @map("device_id") @db.Uuid
   expiresAt DateTime  @map("expires_at")
   revokedAt DateTime? @map("revoked_at")
   createdAt DateTime  @default(now()) @map("created_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([familyId])
+  @@index([deviceId])
   @@map("refresh_tokens")
+}
+
+/// One WhatsApp code sent to a number. Phone numbers appear only as keyed hashes in the lookup and
+/// rate-limit columns; phone_e164 is kept so the account can be created at verify, and rows are
+/// deleted a day after they were made.
+model OtpRequest {
+  id                String      @id @default(uuid()) @db.Uuid
+  phoneHmac         String      @map("phone_hmac")
+  phoneE164         String      @map("phone_e164")
+  codeHmac          String      @map("code_hmac")
+  installIdHmac     String      @map("install_id_hmac")
+  ipHmac            String      @map("ip_hmac")
+  termsVersion      String      @map("terms_version")
+  expiresAt         DateTime    @map("expires_at")
+  wrongAttempts     Int         @default(0) @map("wrong_attempts")
+  consumedAt        DateTime?   @map("consumed_at")
+  cancelledAt       DateTime?   @map("cancelled_at")
+  delivery          OtpDelivery @default(PENDING)
+  providerMessageId String?     @unique @map("provider_message_id")
+  createdAt         DateTime    @default(now()) @map("created_at")
+
+  @@index([phoneHmac, createdAt])
+  @@index([installIdHmac, createdAt])
+  @@index([ipHmac, createdAt])
+  @@index([createdAt])
+  @@map("otp_requests")
+}
+
+/// A phone the user signed in on. installIdHmac is a keyed hash of the app's install id.
+model Device {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  installIdHmac String    @map("install_id_hmac")
+  name          String
+  platform      String
+  createdAt     DateTime  @default(now()) @map("created_at")
+  lastSeenAt    DateTime  @default(now()) @map("last_seen_at")
+  revokedAt     DateTime? @map("revoked_at")
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId])
+  @@index([userId, installIdHmac])
+  @@map("devices")
+}
+
+/// What the patient agreed to, which version, and when. Rows are only ever added.
+model ConsentRecord {
+  id         String      @id @default(uuid()) @db.Uuid
+  userId     String      @map("user_id") @db.Uuid
+  kind       ConsentKind
+  version    String
+  acceptedAt DateTime    @default(now()) @map("accepted_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, kind])
+  @@map("consent_records")
+}
+
+/// A code was right, but the device is new and the account has a recovery code (P2). The token
+/// proves the code step; the recovery code completes the sign-in.
+model SecondFactorChallenge {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  tokenHash      String    @unique @map("token_hash")
+  installIdHmac  String    @map("install_id_hmac")
+  deviceName     String    @map("device_name")
+  devicePlatform String    @map("device_platform")
+  wrongAttempts  Int       @default(0) @map("wrong_attempts")
+  expiresAt      DateTime  @map("expires_at")
+  consumedAt     DateTime? @map("consumed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("second_factor_challenges")
 }
 
 // Audit trail: IDs, action codes and timestamps only (no PHI, no IP, no free text).

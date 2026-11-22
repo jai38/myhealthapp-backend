@@ -212,6 +212,11 @@ locals {
     DATABASE_URL   = "Database connection string. Set after the database password is set."
     JWT_SECRET     = "Signing secret for access tokens. At least 32 random characters."
     GEMINI_API_KEY = "Gemini API key used by the extraction worker."
+    # Phone sign-in (whatsapp.tf). Placeholders are harmless while whatsapp_sender is disabled.
+    OTP_HMAC_SECRET           = "Key for the keyed hashes of codes, numbers and recovery codes. At least 32 random characters, different from JWT_SECRET."
+    META_WHATSAPP_TOKEN       = "Permanent system-user token for the Meta Cloud API (WhatsApp)."
+    META_APP_SECRET           = "Meta app secret; checks the signature on WhatsApp webhook calls."
+    META_WEBHOOK_VERIFY_TOKEN = "Any random string; the same value goes in the Meta app's webhook settings."
   }
 }
 

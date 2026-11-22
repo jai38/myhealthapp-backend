@@ -27,6 +27,10 @@ export const FORBIDDEN_WORKER_VARIABLES = [
   'JWT_SECRET',
   'STORAGE_ACCESS_KEY',
   'STORAGE_SECRET_KEY',
+  'OTP_HMAC_SECRET',
+  'META_WHATSAPP_TOKEN',
+  'META_APP_SECRET',
+  'META_WEBHOOK_VERIFY_TOKEN',
 ] as const;
 
 /** Throws, naming variables only and never values, when the worker would start unsafely. */

@@ -3,9 +3,22 @@ import { AuthProviderAdapter, MockAuthProviderAdapter } from '../modules/auth/au
 
 export interface AuthenticatedContext {
   userId: string;
-  email: string;
+  /** Email accounts only. Phone accounts have no login email. */
+  email?: string;
   patientProfileId: string;
+  /** Set for phone sessions (Phase 5): the signed-in device and whether S03 is done. */
+  authMethod?: 'phone';
+  deviceId?: string;
+  profileComplete?: boolean;
 }
+
+/** Checks phone-session tokens. Null means "not a phone token"; a throw means a bad phone token. */
+export type PhoneTokenVerifier = (token: string) => Promise<{
+  userId: string;
+  patientProfileId: string;
+  deviceId: string;
+  profileComplete: boolean;
+} | null>;
 
 declare global {
   namespace Express {
@@ -28,7 +41,10 @@ const patientProfileResolver = async (userId: string): Promise<string> => {
   return `pat_${userId}`;
 };
 
-export const createAuthMiddleware = (authAdapter: AuthProviderAdapter = new MockAuthProviderAdapter()) => {
+export const createAuthMiddleware = (
+  authAdapter: AuthProviderAdapter = new MockAuthProviderAdapter(),
+  phoneVerifier?: PhoneTokenVerifier,
+) => {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const authHeader = req.headers.authorization;
 
@@ -45,6 +61,21 @@ export const createAuthMiddleware = (authAdapter: AuthProviderAdapter = new Mock
     const token = authHeader.slice(7);
 
     try {
+      // A phone-session token is checked only by the phone verifier (device revocation included). It
+      // never falls through to the email verifier.
+      const phone = phoneVerifier ? await phoneVerifier(token) : null;
+      if (phone) {
+        req.authContext = {
+          userId: phone.userId,
+          patientProfileId: phone.patientProfileId,
+          authMethod: 'phone',
+          deviceId: phone.deviceId,
+          profileComplete: phone.profileComplete,
+        };
+        next();
+        return;
+      }
+
       const verified = await authAdapter.verifySessionToken(token);
       const patientProfileId = verified.patientProfileId || await patientProfileResolver(verified.userId);
 
@@ -91,4 +122,18 @@ export const requireOwnership = (paramKey: string = 'patientProfileId') => {
 
     next();
   };
+};
+
+/**
+ * Health-data routes need a finished account for phone sign-ins: S03 done and health-data consent
+ * recorded. Email accounts and tests pass through unchanged.
+ */
+export const requireCompletedAccount = (req: Request, res: Response, next: NextFunction): void => {
+  if (req.authContext?.authMethod === 'phone' && !req.authContext.profileComplete) {
+    res.status(403).json({
+      error: { code: 'ACCOUNT_INCOMPLETE', message: 'Finish creating your account first' },
+    });
+    return;
+  }
+  next();
 };

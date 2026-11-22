@@ -21,12 +21,13 @@ locals {
     DATABASE_URL       = "Dev database URL: the same RDS host with ?schema=dev&sslmode=require."
     JWT_SECRET         = "Dev signing secret. Different from prod, at least 32 random characters."
     SEED_USER_PASSWORD = "Password for every seeded dev account (12+ characters)."
+    OTP_HMAC_SECRET    = "Dev key for phone sign-in keyed hashes. Different from prod, at least 32 random characters."
   }
 
   dev_bucket_name = "${local.name}-dev-documents-${local.account_id}"
 
   # Prod API settings, minus the ones dev replaces.
-  dev_overridden_env = ["STORAGE_BUCKET", "EXTRACTION_MODE", "EXTRACTION_JOBS_QUEUE_URL", "EXTRACTION_RESULTS_QUEUE_URL", "EMAIL_PROVIDER", "EMAIL_FROM", "SES_REGION", "EMAIL_VERIFICATION_REQUIRED", "APP_BASE_URL"]
+  dev_overridden_env = ["STORAGE_BUCKET", "EXTRACTION_MODE", "EXTRACTION_JOBS_QUEUE_URL", "EXTRACTION_RESULTS_QUEUE_URL", "EMAIL_PROVIDER", "EMAIL_FROM", "SES_REGION", "EMAIL_VERIFICATION_REQUIRED", "APP_BASE_URL", "WHATSAPP_SENDER"]
   dev_api_environment = concat(
     [for e in local.api_environment : e if !contains(local.dev_overridden_env, e.name)],
     [
@@ -36,8 +37,18 @@ locals {
       { name = "AI_EXTRACTION_PROVIDER", value = "gemini" },
       { name = "AI_PROVIDER_APPROVED", value = tostring(var.ai_provider_approved) },
       { name = "EMAIL_VERIFICATION_REQUIRED", value = "false" },
+      # Dev has its own switch, so turning prod on never starts dev without its secrets.
+      { name = "WHATSAPP_SENDER", value = var.dev_whatsapp_sender },
     ],
   )
+
+  # Dev keeps its own keyed-hash secret; the Meta token and app secret are the shared WhatsApp account's.
+  dev_whatsapp_secrets = [
+    { name = "OTP_HMAC_SECRET", valueFrom = aws_ssm_parameter.dev_secret["OTP_HMAC_SECRET"].arn },
+    { name = "META_WHATSAPP_TOKEN", valueFrom = aws_ssm_parameter.secret["META_WHATSAPP_TOKEN"].arn },
+    { name = "META_APP_SECRET", valueFrom = aws_ssm_parameter.secret["META_APP_SECRET"].arn },
+    { name = "META_WEBHOOK_VERIFY_TOKEN", valueFrom = aws_ssm_parameter.secret["META_WEBHOOK_VERIFY_TOKEN"].arn },
+  ]
 }
 
 variable "dev_enabled" {
@@ -181,11 +192,14 @@ data "aws_iam_policy_document" "dev_execution" {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
     resources = [for g in aws_cloudwatch_log_group.dev : "${g.arn}:*"]
   }
-  # Dev secrets, plus the shared Gemini key for inline extraction. No prod DATABASE_URL or JWT_SECRET.
+  # Dev secrets, plus the shared Gemini key and WhatsApp (Meta) secrets. No prod DATABASE_URL, JWT_SECRET or OTP_HMAC_SECRET.
   statement {
     sid       = "ReadDevSecrets"
     actions   = ["ssm:GetParameters"]
-    resources = concat([for p in aws_ssm_parameter.dev_secret : p.arn], [aws_ssm_parameter.secret["GEMINI_API_KEY"].arn])
+    resources = concat(
+      [for p in aws_ssm_parameter.dev_secret : p.arn],
+      [for name in ["GEMINI_API_KEY", "META_WHATSAPP_TOKEN", "META_APP_SECRET", "META_WEBHOOK_VERIFY_TOKEN"] : aws_ssm_parameter.secret[name].arn],
+    )
   }
   statement {
     sid       = "DecryptSecrets"
@@ -278,11 +292,11 @@ resource "aws_ecs_task_definition" "dev_api" {
     essential    = true
     portMappings = [{ containerPort = local.api_container_port, protocol = "tcp" }]
     environment  = local.dev_api_environment
-    secrets = [
+    secrets = concat([
       { name = "DATABASE_URL", valueFrom = local.dev_secret_arn["DATABASE_URL"] },
       { name = "JWT_SECRET", valueFrom = local.dev_secret_arn["JWT_SECRET"] },
       { name = "GEMINI_API_KEY", valueFrom = aws_ssm_parameter.secret["GEMINI_API_KEY"].arn },
-    ]
+    ], local.dev_whatsapp_secrets)
     healthCheck = {
       command     = ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:${local.api_container_port}/healthz || exit 1"]
       interval    = 30

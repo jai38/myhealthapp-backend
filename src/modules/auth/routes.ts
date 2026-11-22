@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { AuthError, AuthProviderAdapter } from './auth-adapter.js';
 import { fieldErrors } from '../../middleware/validation.js';
 import type { PatientProfileRepository } from '../persistence/repositories.js';
+import type { PhoneAuthService } from '../phone-auth/phone-auth-service.js';
 
 // bcrypt only uses the first 72 bytes, so longer passwords would be silently truncated.
 const passwordSchema = z
@@ -46,6 +47,8 @@ export interface AuthRouterOptions {
   purgePatientData?: (patientProfileId: string) => Promise<unknown>;
   /** Supplies fullName for GET /auth/me. Without it, fullName is left out. */
   patientProfileRepo?: PatientProfileRepository;
+  /** Phone sign-in (Phase 5): refresh, logout and /me also serve phone sessions. */
+  phoneAuth?: PhoneAuthService;
 }
 
 function validationError(res: Response, error: z.ZodError): void {
@@ -147,6 +150,17 @@ export function createAuthRouter(
         return;
       }
 
+      // Phone sessions first; a token that isn't one goes to the email adapter.
+      const phone = options.phoneAuth ? await options.phoneAuth.refresh(parsed.data.refreshToken) : null;
+      if (phone) {
+        if (!phone.ok) {
+          res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired refresh token' } });
+          return;
+        }
+        res.status(200).json({ data: { session: phone.session } });
+        return;
+      }
+
       const session = await authAdapter.refreshToken(parsed.data.refreshToken);
       res.status(200).json({ data: { session } });
     } catch (err: unknown) {
@@ -165,7 +179,8 @@ export function createAuthRouter(
     try {
       const parsed = refreshSchema.safeParse(req.body);
       if (parsed.success) {
-        await authAdapter.signOut(parsed.data.refreshToken);
+        const wasPhone = options.phoneAuth ? await options.phoneAuth.signOut(parsed.data.refreshToken) : false;
+        if (!wasPhone) await authAdapter.signOut(parsed.data.refreshToken);
       }
       res.status(200).json({ data: { message: 'Signed out.' } });
     } catch (err) {
@@ -273,10 +288,23 @@ export function createAuthRouter(
     // GET /auth/me
     router.get('/me', authMiddleware, async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
-        const { userId, email, patientProfileId } = req.authContext!;
+        const { userId, email, patientProfileId, authMethod } = req.authContext!;
         // The patient's own name, looked up by the token's profile id. Left out when none was given.
-        const fullName = (await options.patientProfileRepo?.findFullName(patientProfileId)) ?? undefined;
-        res.status(200).json({ data: { userId, email, patientProfileId, ...(fullName ? { fullName } : {}) } });
+        // Phone accounts have no email; they get their number and whether S03 is done instead.
+        const phone = authMethod === 'phone' && options.phoneAuth ? await options.phoneAuth.accountSummary(userId) : null;
+        const fullName =
+          (phone?.profileComplete ? phone.profile?.fullName : undefined) ??
+          (await options.patientProfileRepo?.findFullName(patientProfileId)) ??
+          undefined;
+        res.status(200).json({
+          data: {
+            userId,
+            ...(email ? { email } : {}),
+            patientProfileId,
+            ...(fullName ? { fullName } : {}),
+            ...(phone ? { phone: phone.phone, profileComplete: phone.profileComplete } : {}),
+          },
+        });
       } catch (err) {
         next(err);
       }

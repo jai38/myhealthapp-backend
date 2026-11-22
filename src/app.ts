@@ -2,7 +2,21 @@ import express, { Express, Request, Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { env } from './config/env.js';
-import { createAuthMiddleware, requireOwnership } from './middleware/auth.js';
+import { createAuthMiddleware, requireCompletedAccount, requireOwnership } from './middleware/auth.js';
+import { PhoneAuthService } from './modules/phone-auth/phone-auth-service.js';
+import { InMemoryPhoneAuthStore, type PhoneAuthStore } from './modules/phone-auth/store.js';
+import { PrismaPhoneAuthStore } from './modules/phone-auth/prisma-store.js';
+import {
+  DisabledWhatsAppSender,
+  MemoryWhatsAppSender,
+  MetaCloudWhatsAppSender,
+  type WhatsAppSender,
+} from './modules/phone-auth/whatsapp-sender.js';
+import {
+  createPhoneAccountRouter,
+  createPhoneAuthRouter,
+  createWhatsAppWebhookRouter,
+} from './modules/phone-auth/routes.js';
 import { createAppStatusHandler, AppStatusConfig, appStatusFromEnv } from './modules/app-status/app-status.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import {
@@ -82,6 +96,41 @@ export interface AppOptions {
   timelineRepo?: TimelineRepository;
   medicationRepo?: MedicationRepository;
   patientProfileRepo?: PatientProfileRepository;
+  /** Phone sign-in (Phase 5). Tests pass a memory store and sender, or a whole service. */
+  phoneAuthService?: PhoneAuthService;
+  phoneAuthStore?: PhoneAuthStore;
+  whatsappSender?: WhatsAppSender;
+}
+
+function whatsappSenderFromEnv(): WhatsAppSender {
+  if (env.WHATSAPP_SENDER === 'meta') {
+    return new MetaCloudWhatsAppSender({
+      token: env.META_WHATSAPP_TOKEN ?? '',
+      phoneNumberId: env.META_WHATSAPP_PHONE_NUMBER_ID ?? '',
+      templateName: env.META_WHATSAPP_TEMPLATE_NAME ?? '',
+      templateLanguage: env.META_WHATSAPP_TEMPLATE_LANGUAGE,
+      graphApiVersion: env.META_GRAPH_API_VERSION,
+    });
+  }
+  return env.WHATSAPP_SENDER === 'memory' ? new MemoryWhatsAppSender() : new DisabledWhatsAppSender();
+}
+
+/**
+ * CloudWatch embedded-metric line: a count and a metric name, nothing else (no number, code or name).
+ * Written only in production, where the API's log group turns it into the metric the alarm watches.
+ */
+function emitOtpMetric(name: string, value: number): void {
+  if (process.env.NODE_ENV !== 'production') return;
+  process.stdout.write(
+    JSON.stringify({
+      _aws: {
+        Timestamp: Date.now(),
+        CloudWatchMetrics: [{ Namespace: 'Ayoreni/PhoneSignIn', Dimensions: [['Deployment']], Metrics: [{ Name: name, Unit: 'Count' }] }],
+      },
+      Deployment: env.DEPLOYMENT_ENV ?? 'prod',
+      [name]: value,
+    }) + '\n',
+  );
 }
 
 export const createApp = (options?: AppOptions): Express => {
@@ -93,6 +142,26 @@ export const createApp = (options?: AppOptions): Express => {
       origin: env.CLIENT_URL === '*' ? true : env.CLIENT_URL,
       credentials: true,
     })
+  );
+
+  const inMemoryStores = process.env.NODE_ENV === 'test' && !process.env.TEST_USE_POSTGRES;
+  const phoneAuth =
+    options?.phoneAuthService ??
+    new PhoneAuthService({
+      store: options?.phoneAuthStore ?? (inMemoryStores ? new InMemoryPhoneAuthStore() : new PrismaPhoneAuthStore(getPrismaClient())),
+      sender: options?.whatsappSender ?? whatsappSenderFromEnv(),
+      hmacSecret: env.OTP_HMAC_SECRET,
+      jwtSecret: env.JWT_SECRET,
+      dailyCap: env.OTP_DAILY_CAP,
+      fixedCode: env.OTP_FIXED_CODE,
+      testNumbers: (env.OTP_TEST_NUMBERS ?? '').split(',').map((n) => n.trim()).filter(Boolean),
+      metric: emitOtpMetric,
+    });
+
+  // Meta's delivery webhook reads the raw body (its signature covers the bytes), so it sits before the JSON parser.
+  app.use(
+    `${env.API_PREFIX}/webhooks/whatsapp`,
+    createWhatsAppWebhookRouter(phoneAuth, { appSecret: env.META_APP_SECRET, verifyToken: env.META_WEBHOOK_VERIFY_TOKEN }),
   );
 
   // Security Rule: Production JSON requests only carry lightweight metadata (intents, review forms).
@@ -121,7 +190,7 @@ export const createApp = (options?: AppOptions): Express => {
       ? new DatabaseAuthProviderAdapter(getPrismaClient())
       : new MockAuthProviderAdapter());
 
-  const authMiddleware = createAuthMiddleware(authAdapter);
+  const authMiddleware = createAuthMiddleware(authAdapter, (token) => phoneAuth.verifyAccessToken(token));
 
   // Foundation endpoint: Authenticated Patient Profile (derived server-side)
   app.get(
@@ -252,11 +321,14 @@ export const createApp = (options?: AppOptions): Express => {
   const medicationService =
     options?.medicationService ?? new MedicationService(medicationRepo, documentService);
 
+  app.use(`${env.API_PREFIX}/auth`, createPhoneAuthRouter(phoneAuth));
+  app.use(`${env.API_PREFIX}/auth`, createPhoneAccountRouter(phoneAuth, authMiddleware));
   app.use(
     `${env.API_PREFIX}/auth`,
     createAuthRouter(authAdapter, authMiddleware, {
       purgePatientData: (patientProfileId) => documentService.purgeByPatientProfile(patientProfileId),
       patientProfileRepo,
+      phoneAuth,
     })
   );
 
@@ -264,24 +336,28 @@ export const createApp = (options?: AppOptions): Express => {
   app.use(
     `${env.API_PREFIX}/documents`,
     authMiddleware,
+    requireCompletedAccount,
     createDocumentRouter(documentService)
   );
 
   app.use(
     `${env.API_PREFIX}/prescriptions`,
     authMiddleware,
+    requireCompletedAccount,
     createPrescriptionRouter(jobQueue, prescriptionService)
   );
 
   app.use(
     `${env.API_PREFIX}/timeline`,
     authMiddleware,
+    requireCompletedAccount,
     createTimelineRouter(timelineService)
   );
 
   app.use(
     `${env.API_PREFIX}/medications`,
     authMiddleware,
+    requireCompletedAccount,
     createMedicationRouter(medicationService)
   );
 
@@ -297,6 +373,7 @@ export const createApp = (options?: AppOptions): Express => {
   app.use(
     `${env.API_PREFIX}/reports`,
     authMiddleware,
+    requireCompletedAccount,
     createReportRouter(reportService)
   );
 
